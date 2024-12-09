@@ -55,6 +55,9 @@ coverage/
 *.jsonl
 !example*.jsonl
 
+# Local documentation
+PUBLISHING.md
+
 # OS generated files
 .DS_Store
 .DS_Store?
