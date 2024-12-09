@@ -53,7 +53,7 @@ coverage/
 
 # Memory files (except examples)
 *.jsonl
-!example/*.jsonl
+!example*.jsonl
 
 # OS generated files
 .DS_Store

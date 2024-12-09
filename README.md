@@ -160,6 +160,7 @@ Add this to your claude_desktop_config.json:
 
 You can specify a custom path for the memory file:
 
+```json
 {
   "mcpServers": {
     "memory": {
@@ -168,6 +169,7 @@ You can specify a custom path for the memory file:
     }
   }
 }
+```
 
 If no path is specified, it will default to memory.jsonl in the server's installation directory.
 
