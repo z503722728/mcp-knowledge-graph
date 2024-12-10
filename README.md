@@ -7,6 +7,14 @@ This lets Claude remember information about the user across chats.
 > [!NOTE]
 > This is a fork of the original [Memory Server](https://github.com/modelcontextprotocol/servers/tree/main/src/memory) and in intended to not use the ephemeral memory npx installation method.
 
+## Server Name
+
+```txt
+mcp-knowledge-graph
+```
+
+![screen-of-server-name](img/server-name.png)
+
 ## Core Concepts
 
 ### Entities
