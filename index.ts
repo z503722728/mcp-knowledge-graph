@@ -194,8 +194,8 @@ const knowledgeGraphManager = new KnowledgeGraphManager();
 
 // The server instance and tools exposed to Claude
 const server = new Server({
-  name: "memory-server",
-  version: "1.0.0",
+  name: "mcp-knowledge-graph",
+  version: "1.0.1",
 },    {
     capabilities: {
       tools: {},
