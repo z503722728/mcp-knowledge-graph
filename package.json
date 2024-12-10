@@ -1,6 +1,6 @@
 {
   "name": "mcp-knowledge-graph",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "MCP server enabling persistent memory for Claude through a local knowledge graph",
   "license": "MIT",
   "author": "Anthropic, PBC (https://anthropic.com)",
