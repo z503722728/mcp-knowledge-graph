@@ -59,6 +59,12 @@ coverage/
 PUBLISHING.md
 VERSION_UPDATE.md
 
+# History files
+.history/
+
+# Package files
+*.tgz
+
 # OS generated files
 .DS_Store
 .DS_Store?
