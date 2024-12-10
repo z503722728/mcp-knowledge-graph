@@ -57,6 +57,7 @@ coverage/
 
 # Local documentation
 PUBLISHING.md
+VERSION_UPDATE.md
 
 # OS generated files
 .DS_Store
