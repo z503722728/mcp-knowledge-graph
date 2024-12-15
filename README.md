@@ -5,7 +5,7 @@ An improved implementation of persistent memory using a local knowledge graph wi
 This lets Claude remember information about the user across chats.
 
 > [!NOTE]
-> This is a fork of the original [Memory Server](https://github.com/modelcontextprotocol/servers/tree/main/src/memory) and in intended to not use the ephemeral memory npx installation method.
+> This is a fork of the original [Memory Server](https://github.com/modelcontextprotocol/servers/tree/main/src/memory) and is intended to not use the ephemeral memory npx installation method.
 
 ## Server Name
 
