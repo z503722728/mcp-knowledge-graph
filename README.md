@@ -1,5 +1,7 @@
 # Knowledge Graph Memory Server
 
+[![smithery badge](https://smithery.ai/badge/@itseasy21/mcp-knowledge-graph)](https://smithery.ai/server/@itseasy21/mcp-knowledge-graph)
+
 An improved implementation of persistent memory using a local knowledge graph with a customizable `--memory-path`.
 
 This lets Claude remember information about the user across chats.
@@ -167,6 +169,14 @@ Add this to your claude_desktop_config.json:
     }
   }
 }
+```
+
+### Installing via Smithery
+
+To install Knowledge Graph Memory Server for Claude Desktop automatically via [Smithery](https://smithery.ai/server/@itseasy21/mcp-knowledge-graph):
+
+```bash
+npx -y @smithery/cli install @itseasy21/mcp-knowledge-graph --client claude
 ```
 
 ### Custom Memory Path
