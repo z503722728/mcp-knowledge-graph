@@ -1,6 +1,6 @@
 {
   "name": "@itseasy21/mcp-knowledge-graph",
-  "version": "1.0.4",
+  "version": "1.0.5",
   "description": "MCP server enabling persistent memory for Claude through a local knowledge graph",
   "license": "MIT",
   "author": "itseasy21",
