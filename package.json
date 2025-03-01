@@ -7,9 +7,7 @@
   "homepage": "https://github.com/itseasy21/mcp-knowledge-graph",
   "bugs": "https://github.com/itseasy21/mcp-knowledge-graph/issues",
   "type": "module",
-  "bin": {
-    "mcp-knowledge-graph": "dist/index.js"
-  },
+  "bin": "./dist/index.js",
   "main": "dist/index.js",
   "files": [
     "dist"
