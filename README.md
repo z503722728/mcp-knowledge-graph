@@ -2,7 +2,7 @@
 
 [![smithery badge](https://smithery.ai/badge/@itseasy21/mcp-knowledge-graph)](https://smithery.ai/server/@itseasy21/mcp-knowledge-graph)
 
-An improved implementation of persistent memory using a local knowledge graph with a customizable `--memory-path`.
+An improved implementation of persistent memory using a local knowledge graph with a customizable memory path.
 
 This lets Claude remember information about the user across chats.
 
@@ -151,24 +151,27 @@ Example:
     - Relations between requested entities
   - Silently skips non-existent nodes
 
-## Usage with Claude Desktop
+## Usage with Cursor, Cline or Claude Desktop
 
 ### Setup
 
-Add this to your claude_desktop_config.json:
+Add this to your mcp.json or claude_desktop_config.json:
 
 ```json
 {
-  "mcpServers": {
-    "memory": {
-      "command": "npx",
-      "args": [
-        "-y",
-        "@modelcontextprotocol/server-memory"
-      ]
+    "mcpServers": {
+      "memory": {
+        "command": "npx",
+        "args": [
+          "-y",
+          "@itseasy21/mcp-knowledge-graph"
+        ],
+        "env": {
+          "MEMORY_FILE_PATH": "/path/to/your/projects.jsonl"
+        }
+      }
     }
   }
-}
 ```
 
 ### Installing via Smithery
@@ -181,14 +184,30 @@ npx -y @smithery/cli install @itseasy21/mcp-knowledge-graph --client claude
 
 ### Custom Memory Path
 
-You can specify a custom path for the memory file:
+You can specify a custom path for the memory file in two ways:
 
+1. Using command-line arguments:
 ```json
 {
   "mcpServers": {
     "memory": {
       "command": "npx",
-      "args": ["-y", "@modelcontextprotocol/server-memory", "--memory-path", "/path/to/your/memory.jsonl"]
+      "args": ["-y", "@itseasy21/mcp-knowledge-graph", "--memory-path", "/path/to/your/memory.jsonl"]
+    }
+  }
+}
+```
+
+2. Using environment variables:
+```json
+{
+  "mcpServers": {
+    "memory": {
+      "command": "npx",
+      "args": ["-y", "@itseasy21/mcp-knowledge-graph"],
+      "env": {
+        "MEMORY_FILE_PATH": "/path/to/your/memory.jsonl"
+      }
     }
   }
 }

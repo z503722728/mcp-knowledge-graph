@@ -14,7 +14,8 @@ import { isAbsolute } from 'path';
 
 // Parse args and handle paths safely
 const argv = minimist(process.argv.slice(2));
-let memoryPath = argv['memory-path'];
+// Check for memory path in command line args or environment variable
+let memoryPath = argv['memory-path'] || process.env.MEMORY_FILE_PATH;
 
 // If a custom path is provided, ensure it's absolute
 if (memoryPath && !isAbsolute(memoryPath)) {
