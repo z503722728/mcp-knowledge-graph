@@ -3,7 +3,7 @@
   "version": "1.0.3",
   "description": "MCP server enabling persistent memory for Claude through a local knowledge graph",
   "license": "MIT",
-  "author": "Anthropic, PBC (https://anthropic.com)",
+  "author": "itseasy21",
   "homepage": "https://github.com/itseasy21/mcp-knowledge-graph",
   "bugs": "https://github.com/itseasy21/mcp-knowledge-graph/issues",
   "type": "module",
