@@ -188,7 +188,7 @@ You can specify a custom path for the memory file:
   "mcpServers": {
     "memory": {
       "command": "npx",
-      "args": ["-y", "@modelcontextprotocol/server-memory", "--", "--memory-path", "/path/to/your/memory.jsonl"]
+      "args": ["-y", "@modelcontextprotocol/server-memory", "--memory-path", "/path/to/your/memory.jsonl"]
     }
   }
 }
