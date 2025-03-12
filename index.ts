@@ -32,12 +32,16 @@ interface Entity {
   name: string;
   entityType: string;
   observations: string[];
+  createdAt: string;
+  version: number;
 }
 
 interface Relation {
   from: string;
   to: string;
   relationType: string;
+  createdAt: string;
+  version: number;
 }
 
 interface KnowledgeGraph {
@@ -75,7 +79,12 @@ class KnowledgeGraphManager {
 
   async createEntities(entities: Entity[]): Promise<Entity[]> {
     const graph = await this.loadGraph();
-    const newEntities = entities.filter(e => !graph.entities.some(existingEntity => existingEntity.name === e.name));
+    const newEntities = entities.filter(e => !graph.entities.some(existingEntity => existingEntity.name === e.name))
+      .map(e => ({
+        ...e,
+        createdAt: new Date().toISOString(),
+        version: e.version || 1
+      }));
     graph.entities.push(...newEntities);
     await this.saveGraph(graph);
     return newEntities;
@@ -87,7 +96,11 @@ class KnowledgeGraphManager {
       existingRelation.from === r.from &&
       existingRelation.to === r.to &&
       existingRelation.relationType === r.relationType
-    ));
+    )).map(r => ({
+      ...r,
+      createdAt: new Date().toISOString(),
+      version: r.version || 1
+    }));
     graph.relations.push(...newRelations);
     await this.saveGraph(graph);
     return newRelations;
@@ -187,6 +200,68 @@ class KnowledgeGraphManager {
     };
 
     return filteredGraph;
+  }
+
+  async updateEntities(entities: Entity[]): Promise<Entity[]> {
+    const graph = await this.loadGraph();
+    const updatedEntities = entities.map(updateEntity => {
+      const existingEntity = graph.entities.find(e => e.name === updateEntity.name);
+      if (!existingEntity) {
+        throw new Error(`Entity with name ${updateEntity.name} not found`);
+      }
+      return {
+        ...existingEntity,
+        ...updateEntity,
+        version: existingEntity.version + 1,
+        createdAt: new Date().toISOString()
+      };
+    });
+    
+    // Update entities in the graph
+    updatedEntities.forEach(updatedEntity => {
+      const index = graph.entities.findIndex(e => e.name === updatedEntity.name);
+      if (index !== -1) {
+        graph.entities[index] = updatedEntity;
+      }
+    });
+    
+    await this.saveGraph(graph);
+    return updatedEntities;
+  }
+
+  async updateRelations(relations: Relation[]): Promise<Relation[]> {
+    const graph = await this.loadGraph();
+    const updatedRelations = relations.map(updateRelation => {
+      const existingRelation = graph.relations.find(r =>
+        r.from === updateRelation.from &&
+        r.to === updateRelation.to &&
+        r.relationType === updateRelation.relationType
+      );
+      if (!existingRelation) {
+        throw new Error(`Relation not found`);
+      }
+      return {
+        ...existingRelation,
+        ...updateRelation,
+        version: existingRelation.version + 1,
+        createdAt: new Date().toISOString()
+      };
+    });
+    
+    // Update relations in the graph
+    updatedRelations.forEach(updatedRelation => {
+      const index = graph.relations.findIndex(r =>
+        r.from === updatedRelation.from &&
+        r.to === updatedRelation.to &&
+        r.relationType === updatedRelation.relationType
+      );
+      if (index !== -1) {
+        graph.relations[index] = updatedRelation;
+      }
+    });
+    
+    await this.saveGraph(graph);
+    return updatedRelations;
   }
 }
 
