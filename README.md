@@ -28,6 +28,9 @@ Entities are the primary nodes in the knowledge graph. Each entity has:
 - A unique name (identifier)
 - An entity type (e.g., "person", "organization", "event")
 - A list of observations
+- Creation date and version tracking
+
+The version tracking feature helps maintain a historical context of how knowledge evolves over time.
 
 Example:
 
@@ -41,7 +44,13 @@ Example:
 
 ### Relations
 
-Relations define directed connections between entities. They are always stored in active voice and describe how entities interact or relate to each other.
+Relations define directed connections between entities. They are always stored in active voice and describe how entities interact or relate to each other. Each relation includes:
+
+- Source and target entities
+- Relationship type
+- Creation date and version information
+
+This versioning system helps track how relationships between entities evolve over time.
 
 Example:
 

@@ -270,8 +270,8 @@ const knowledgeGraphManager = new KnowledgeGraphManager();
 
 // The server instance and tools exposed to Claude
 const server = new Server({
-  name: "mcp-knowledge-graph",
-  version: "1.0.1",
+  name: "@itseasy21/mcp-knowledge-graph",
+  version: "1.0.7",
 },    {
     capabilities: {
       tools: {},
@@ -451,6 +451,54 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
           required: ["names"],
         },
       },
+      {
+        name: "update_entities",
+        description: "Update multiple existing entities in the knowledge graph",
+        inputSchema: {
+          type: "object",
+          properties: {
+            entities: {
+              type: "array",
+              items: {
+                type: "object",
+                properties: {
+                  name: { type: "string", description: "The name of the entity to update" },
+                  entityType: { type: "string", description: "The updated type of the entity" },
+                  observations: {
+                    type: "array",
+                    items: { type: "string" },
+                    description: "The updated array of observation contents"
+                  },
+                },
+                required: ["name"],
+              },
+            },
+          },
+          required: ["entities"],
+        },
+      },
+      {
+        name: "update_relations",
+        description: "Update multiple existing relations in the knowledge graph",
+        inputSchema: {
+          type: "object",
+          properties: {
+            relations: {
+              type: "array",
+              items: {
+                type: "object",
+                properties: {
+                  from: { type: "string", description: "The name of the entity where the relation starts" },
+                  to: { type: "string", description: "The name of the entity where the relation ends" },
+                  relationType: { type: "string", description: "The type of the relation" },
+                },
+                required: ["from", "to", "relationType"],
+              },
+            },
+          },
+          required: ["relations"],
+        },
+      },
     ],
   };
 });
@@ -484,6 +532,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       return { content: [{ type: "text", text: JSON.stringify(await knowledgeGraphManager.searchNodes(args.query as string), null, 2) }] };
     case "open_nodes":
       return { content: [{ type: "text", text: JSON.stringify(await knowledgeGraphManager.openNodes(args.names as string[]), null, 2) }] };
+    case "update_entities":
+      return { content: [{ type: "text", text: JSON.stringify(await knowledgeGraphManager.updateEntities(args.entities as Entity[]), null, 2) }] };
+    case "update_relations":
+      return { content: [{ type: "text", text: JSON.stringify(await knowledgeGraphManager.updateRelations(args.relations as Relation[]), null, 2) }] };
     default:
       throw new Error(`Unknown tool: ${name}`);
   }
