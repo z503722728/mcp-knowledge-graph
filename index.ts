@@ -154,14 +154,16 @@ class KnowledgeGraphManager {
   }
 
   // Very basic search function
-  async searchNodes(query: string): Promise<KnowledgeGraph> {
+  async searchNodes(queries: string[]): Promise<KnowledgeGraph> {
     const graph = await this.loadGraph();
 
-    // Filter entities
+    // Filter entities: Check if any query matches name, entityType, or observations
     const filteredEntities = graph.entities.filter(e =>
-      e.name.toLowerCase().includes(query.toLowerCase()) ||
-      e.entityType.toLowerCase().includes(query.toLowerCase()) ||
-      e.observations.some(o => o.toLowerCase().includes(query.toLowerCase()))
+      queries.some(query =>
+        e.name.toLowerCase().includes(query.toLowerCase()) ||
+        e.entityType.toLowerCase().includes(query.toLowerCase()) ||
+        e.observations.some(o => o.toLowerCase().includes(query.toLowerCase()))
+      )
     );
 
     // Create a Set of filtered entity names for quick lookup
@@ -529,7 +531,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     case "read_graph":
       return { content: [{ type: "text", text: JSON.stringify(await knowledgeGraphManager.readGraph(), null, 2) }] };
     case "search_nodes":
-      return { content: [{ type: "text", text: JSON.stringify(await knowledgeGraphManager.searchNodes(args.query as string), null, 2) }] };
+      return { content: [{ type: "text", text: JSON.stringify(await knowledgeGraphManager.searchNodes(args.query as string[]), null, 2) }] };
     case "open_nodes":
       return { content: [{ type: "text", text: JSON.stringify(await knowledgeGraphManager.openNodes(args.names as string[]), null, 2) }] };
     case "update_entities":
