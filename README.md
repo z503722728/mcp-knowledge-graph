@@ -2,12 +2,12 @@
 
 [![smithery badge](https://smithery.ai/badge/@itseasy21/mcp-knowledge-graph)](https://smithery.ai/server/@itseasy21/mcp-knowledge-graph)
 
-An improved implementation of persistent memory using a local knowledge graph with a customizable memory path.
+An improved implementation of persistent memory using a local knowledge graph with a customizable memory path and a refactored data structure.
 
 This lets Claude remember information about the user across chats.
 
 > [!NOTE]
-> This is a fork of the original [Memory Server](https://github.com/modelcontextprotocol/servers/tree/main/src/memory) and is intended to not use the ephemeral memory npx installation method.
+> This is a fork of the original [Memory Server](https://github.com/modelcontextprotocol/servers/tree/main/src/memory) and is intended to not use the ephemeral memory npx installation method. It features a refactored storage model where Observations are top-level items.
 
 ## Server Name
 
@@ -21,144 +21,124 @@ mcp-knowledge-graph
 
 ## Core Concepts
 
+The server stores information in a knowledge graph consisting of Entities, Relations, and Observations.
+
 ### Entities
 
-Entities are the primary nodes in the knowledge graph. Each entity has:
+Entities represent the core concepts or objects (e.g., people, places, projects). Each entity has:
 
-- A unique name (identifier)
-- An entity type (e.g., "person", "organization", "event")
-- A list of observations
-- Creation date and version tracking
+- A unique `name` (string identifier, e.g., `Character-艾拉`)
+- An `entityType` (string, e.g., `Character`, `Location`)
+- Optional `aliases` (string array for alternative names)
+- `createdAt` timestamp and `version` tracking
 
-The version tracking feature helps maintain a historical context of how knowledge evolves over time.
+*Note: Observations are no longer stored directly within entities.*
 
-Example:
-
+Example Entity (in `memory.jsonl`):
 ```json
-{
-  "name": "John_Smith",
-  "entityType": "person",
-  "observations": ["Speaks fluent Spanish"]
-}
+{"type":"entity","name":"Character-艾拉","entityType":"Character","aliases":["艾拉"],"createdAt":"2025-04-08T10:04:39.028Z","version":1}
 ```
 
 ### Relations
 
-Relations define directed connections between entities. They are always stored in active voice and describe how entities interact or relate to each other. Each relation includes:
+Relations define directed connections between entities, always described in active voice.
 
-- Source and target entities
-- Relationship type
-- Creation date and version information
+- `from`: Source entity name
+- `to`: Target entity name
+- `relationType`: Type of relationship (e.g., `认识`, `位于`, `发现`)
+- `createdAt` timestamp and `version` tracking
 
-This versioning system helps track how relationships between entities evolve over time.
-
-Example:
-
+Example Relation (in `memory.jsonl`):
 ```json
-{
-  "from": "John_Smith",
-  "to": "Anthropic",
-  "relationType": "works_at"
-}
+{"type":"relation","to":"Character-博士","from":"Character-艾拉","relationType":"认识","createdAt":"2025-04-08T10:04:41.347Z","version":1}
 ```
 
 ### Observations
 
-Observations are discrete pieces of information about an entity. They are:
+Observations are individual pieces of information or facts associated with a specific entity. They are now stored as separate, top-level objects in the graph.
 
-- Stored as strings
-- Attached to specific entities
-- Can be added or removed independently
-- Should be atomic (one fact per observation)
+- `id`: A unique identifier for the observation (e.g., `obs_1744106684616_a18lxat`)
+- `entityName`: The name of the entity this observation is about (links to an Entity)
+- `content`: The observation text (string). Can optionally include prefixes for automatic parsing:
+    - `[<ISO_Timestamp>]`: e.g., `[2025-04-08T10:00:00Z]`
+    - `[S:<Status>]`: e.g., `[S:Active]`, `[S:Archived]`, `[S:Resolved]`, `[S:Background]`
+- `timestamp`: (Optional) ISO timestamp string, automatically parsed from the content if present.
+- `status`: (Optional) Status string (`Active`, `Resolved`, `Background`, `Archived`), automatically parsed from the content if present.
+- `createdAt` timestamp and `version` tracking
 
-Example:
+**Important:** Observations with `status: 'Archived'` are filtered out during server startup (affecting the in-memory graph) and are **never** returned by query tools (`getContextInfo`, `searchNodes`, `openNodes`, `readGraph`), even if they temporarily exist in the `memory.jsonl` file.
 
+Example Observation (in `memory.jsonl`):
 ```json
-{
-  "entityName": "John_Smith",
-  "observations": [
-    "Speaks fluent Spanish",
-    "Graduated in 2019",
-    "Prefers morning meetings"
-  ]
-}
+{"type":"observation","id":"obs_1744106684616_a18lxat","entityName":"Character-艾拉","content":"[2025-04-08T10:00:00Z] [S:Active] 状态: 健康","timestamp":"2025-04-08T10:00:00Z","status":"Active","createdAt":"2025-04-08T10:04:44.616Z","version":1}
 ```
 
 ## API
 
 ### Tools
 
-- **create_entities**
-  - Create multiple new entities in the knowledge graph
-  - Input: `entities` (array of objects)
-    - Each object contains:
-      - `name` (string): Entity identifier
-      - `entityType` (string): Type classification
-      - `observations` (string[]): Associated observations
-  - Ignores entities with existing names
+- **`create_entities`**
+  - Creates multiple new entities (without observations).
+  - Input: `entities` (array of objects: `name`, `entityType`, optional `aliases`)
+  - Ignores entities with existing names.
 
-- **create_relations**
-  - Create multiple new relations between entities
-  - Input: `relations` (array of objects)
-    - Each object contains:
-      - `from` (string): Source entity name
-      - `to` (string): Target entity name
-      - `relationType` (string): Relationship type in active voice
-  - Skips duplicate relations
+- **`create_relations`**
+  - Creates multiple new relations between entities.
+  - Input: `relations` (array of objects: `from`, `to`, `relationType`)
+  - Skips duplicate relations.
 
-- **add_observations**
-  - Add new observations to existing entities
-  - Input: `observations` (array of objects)
-    - Each object contains:
-      - `entityName` (string): Target entity
-      - `contents` (string[]): New observations to add
-  - Returns added observations per entity
-  - Fails if entity doesn't exist
+- **`add_observations`**
+  - Adds new observations, associating them with existing entities.
+  - Input: `observations` (array of objects: `entityName`, `contents` [string array])
+  - Parses `contents` for `[<ISO_Timestamp>]` and `[S:<Status>]` prefixes to populate observation metadata.
+  - Creates new top-level observation objects.
+  - Returns `{ addedObservationIds: string[] }` for each input entity.
+  - Fails if the target entity doesn't exist. Skips adding if an observation with the exact same `entityName` and `content` already exists.
 
-- **delete_entities**
-  - Remove entities and their relations
+- **`delete_entities`**
+  - Removes entities and their associated relations and observations.
   - Input: `entityNames` (string[])
-  - Cascading deletion of associated relations
-  - Silent operation if entity doesn't exist
+  - Performs cascading deletion.
 
-- **delete_observations**
-  - Remove specific observations from entities
-  - Input: `deletions` (array of objects)
-    - Each object contains:
-      - `entityName` (string): Target entity
-      - `observations` (string[]): Observations to remove
-  - Silent operation if observation doesn't exist
+- **`delete_observations`**
+  - Removes specific observations by matching `entityName` and the exact `content` string.
+  - Input: `deletions` (array of objects: `entityName`, `observations` [string array of content to delete])
 
-- **delete_relations**
-  - Remove specific relations from the graph
-  - Input: `relations` (array of objects)
-    - Each object contains:
-      - `from` (string): Source entity name
-      - `to` (string): Target entity name
-      - `relationType` (string): Relationship type
-  - Silent operation if relation doesn't exist
+- **`delete_relations`**
+  - Removes specific relations by matching `from`, `to`, and `relationType`.
+  - Input: `relations` (array of objects: `from`, `to`, `relationType`)
 
-- **read_graph**
-  - Read the entire knowledge graph
-  - No input required
-  - Returns complete graph structure with all entities and relations
+- **`read_graph`**
+  - Reads the entire knowledge graph.
+  - No input required.
+  - Returns the complete graph structure: `entities`, `relations`, and **non-archived** `observations`.
 
-- **search_nodes**
-  - Search for nodes based on query
+- **`search_nodes`**
+  - Searches for entities based on a query.
   - Input: `query` (string[])
-  - Searches across:
-    - Entity names
-    - Entity types
-    - Observation content
-  - Returns matching entities and their relations
+  - Searches across entity names, types, aliases, and observation content.
+  - Returns matching entities, their relations, and their associated **non-archived** observations.
 
-- **open_nodes**
-  - Retrieve specific nodes by name
+- **`open_nodes`**
+  - Retrieves specific entities by name.
   - Input: `names` (string[])
+  - Returns requested entities, relations between them, and their associated **non-archived** observations.
+
+- **`update_entities`**
+  - Updates fields (like `entityType` or `aliases`) of existing entities. Does **not** update observations.
+  - Input: `entities` (array of objects: `name` [required], optional `entityType`, optional `aliases`)
+
+- **`update_relations`**
+  - Updates existing relations (currently only updates version/timestamp upon matching `from`, `to`, `relationType`).
+  - Input: `relations` (array of objects: `from`, `to`, `relationType`)
+
+- **`get_context_info`**
+  - Retrieves detailed context for specified entities (matching names/aliases).
+  - Input: `entityNames` (string[])
   - Returns:
-    - Requested entities
-    - Relations between requested entities
-  - Silently skips non-existent nodes
+    - The specified entities and any entities directly related to them.
+    - All relations connecting these returned entities.
+    - Associated **non-archived** observations for all returned entities, intelligently filtered and sorted (Active status first, then recent timestamped history, then untimestamped).
 
 ## Usage with Cursor, Cline or Claude Desktop
 
@@ -173,7 +153,7 @@ Add this to your mcp.json or claude_desktop_config.json:
         "command": "npx",
         "args": [
           "-y",
-          "@itseasy21/mcp-knowledge-graph"
+          "@z503722728/mcp-knowledge-graph"
         ],
         "env": {
           "MEMORY_FILE_PATH": "/path/to/your/projects.jsonl"
@@ -188,7 +168,7 @@ Add this to your mcp.json or claude_desktop_config.json:
 To install Knowledge Graph Memory Server for Claude Desktop automatically via [Smithery](https://smithery.ai/server/@itseasy21/mcp-knowledge-graph):
 
 ```bash
-npx -y @smithery/cli install @itseasy21/mcp-knowledge-graph --client claude
+npx -y @smithery/cli install @z503722728/mcp-knowledge-graph --client claude
 ```
 
 ### Custom Memory Path
@@ -201,7 +181,7 @@ You can specify a custom path for the memory file in two ways:
   "mcpServers": {
     "memory": {
       "command": "npx",
-      "args": ["-y", "@itseasy21/mcp-knowledge-graph", "--memory-path", "/path/to/your/memory.jsonl"]
+      "args": ["-y", "@z503722728/mcp-knowledge-graph", "--memory-path", "/path/to/your/memory.jsonl"]
     }
   }
 }
@@ -213,7 +193,7 @@ You can specify a custom path for the memory file in two ways:
   "mcpServers": {
     "memory": {
       "command": "npx",
-      "args": ["-y", "@itseasy21/mcp-knowledge-graph"],
+      "args": ["-y", "@z503722728/mcp-knowledge-graph"],
       "env": {
         "MEMORY_FILE_PATH": "/path/to/your/memory.jsonl"
       }

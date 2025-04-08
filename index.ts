@@ -27,12 +27,24 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 // Use the custom path or default to the installation directory
 const MEMORY_FILE_PATH = memoryPath || path.join(__dirname, 'memory.jsonl');
 
-// We are storing our memory using entities, relations, and observations in a graph structure
+// Proposing edit to index.ts to extract Observations into a top-level structure
+
+// 1. Define new Observation interface and update Entity/KnowledgeGraph
+interface Observation {
+  id: string; // Unique ID for each observation
+  entityName: string; // Links back to the Entity it describes
+  content: string; // The core text content
+  timestamp?: string; // Optional ISO timestamp field
+  status?: 'Active' | 'Resolved' | 'Background' | 'Archived' | null; // Optional status field
+  createdAt: string;
+  version: number;
+}
+
 interface Entity {
   name: string;
   entityType: string;
   aliases?: string[];
-  observations: string[];
+  // observations: string[]; // REMOVED
   createdAt: string;
   version: number;
 }
@@ -48,50 +60,134 @@ interface Relation {
 interface KnowledgeGraph {
   entities: Entity[];
   relations: Relation[];
+  observations: Observation[]; // ADDED
+}
+
+// Define a specific type for the update payload
+interface EntityUpdatePayload {
+  name: string; // Required
+  entityType?: string; // Optional
+  aliases?: string[]; // Optional
 }
 
 // The KnowledgeGraphManager class contains all operations to interact with the knowledge graph
 class KnowledgeGraphManager {
   private async loadGraph(): Promise<KnowledgeGraph> {
+    // Initialize graph structure explicitly typed
+    let graph: KnowledgeGraph = { entities: [], relations: [], observations: [] };
     try {
-      const data = await fs.readFile(MEMORY_FILE_PATH, "utf-8");
-      const lines = data.split("\n").filter(line => line.trim() !== "");
-      return lines.reduce((graph: KnowledgeGraph, line) => {
-        const item = JSON.parse(line);
-        if (item.type === "entity") graph.entities.push(item as Entity);
-        if (item.type === "relation") graph.relations.push(item as Relation);
-        return graph;
-      }, { entities: [], relations: [] });
+        const data = await fs.readFile(MEMORY_FILE_PATH, "utf-8");
+        const lines = data.split("\n").filter(line => line.trim() !== "");
+
+        // Load all data first, explicitly typing the accumulator in reduce
+        graph = lines.reduce((acc: KnowledgeGraph, line: string): KnowledgeGraph => {
+            try { // Add try-catch for robustness during parsing
+                const item = JSON.parse(line);
+                if (item.type === "entity" && item.name && item.entityType) { // Basic validation
+                    acc.entities.push(item as Entity);
+                } else if (item.type === "relation" && item.from && item.to && item.relationType) { // Basic validation
+                    acc.relations.push(item as Relation);
+                } else if (item.type === "observation" && item.id && item.entityName && typeof item.content === 'string') { // Basic validation
+                    acc.observations.push(item as Observation);
+                } else {
+                    console.warn(`[KnowledgeGraphManager] Skipping invalid line during load: ${line}`);
+                }
+            } catch (parseError) {
+                console.warn(`[KnowledgeGraphManager] Error parsing line during load, skipping: ${line}`, parseError);
+            }
+            return acc; // Return the accumulator
+        }, { entities: [], relations: [], observations: [] }); // Initial value for reduce
+
     } catch (error) {
-      if (error instanceof Error && 'code' in error && (error as any).code === "ENOENT") {
-        return { entities: [], relations: [] };
-      }
-      throw error;
+        if (error instanceof Error && 'code' in error && (error as any).code === "ENOENT") {
+            console.log("[KnowledgeGraphManager] Memory file not found, starting with empty graph.");
+            // graph remains the initial empty object { entities: [], relations: [], observations: [] }
+        } else {
+           console.error("[KnowledgeGraphManager] Error loading graph:", error);
+           // Depending on severity, might want to return empty graph or rethrow
+           // Let's rethrow for now, as other errors might be critical
+           throw error;
+        }
     }
+
+    // --- Startup Cleanup Logic (remains the same) ---
+    const initialCount = graph.observations.length;
+    graph.observations = graph.observations.filter(obs => obs.status !== 'Archived');
+    const removedCount = initialCount - graph.observations.length;
+    if (removedCount > 0) {
+        console.log(`[KnowledgeGraphManager] Performed startup cleanup. Removed ${removedCount} archived observations from loaded graph.`);
+    } else {
+         console.log("[KnowledgeGraphManager] Startup: No archived observations found in loaded graph.");
+    }
+    // --- End Startup Cleanup Logic ---
+
+    return graph; // Return the potentially cleaned graph
   }
 
   private async saveGraph(graph: KnowledgeGraph): Promise<void> {
-    const lines = [
-      ...graph.entities.map(e => JSON.stringify({ type: "entity", ...e })),
-      ...graph.relations.map(r => JSON.stringify({ type: "relation", ...r })),
-    ];
-    await fs.writeFile(MEMORY_FILE_PATH, lines.join("\n"));
+    const dir = path.dirname(MEMORY_FILE_PATH);
+    try { await fs.mkdir(dir, { recursive: true }); }
+    catch (mkdirError) { if (mkdirError instanceof Error && (mkdirError as any).code !== 'EEXIST') { console.error(`Failed to ensure directory exists for saving: ${dir}`, mkdirError); throw mkdirError; } }
+    const validEntities = graph.entities.filter(e => e && typeof e === 'object' && e.name && e.entityType);
+    const validRelations = graph.relations.filter(r => r && typeof r === 'object' && r.from && r.to && r.relationType);
+    const validObservations = graph.observations.filter(o => o && typeof o === 'object' && o.id && o.entityName && typeof o.content === 'string');
+    const lines = [ ...validEntities.map(e => JSON.stringify({ type: "entity", ...e })), ...validRelations.map(r => JSON.stringify({ type: "relation", ...r })), ...validObservations.map(o => JSON.stringify({ type: "observation", ...o })), ];
+    try { await fs.writeFile(MEMORY_FILE_PATH, lines.join("\n") + "\n"); }
+    catch (writeError) { console.error(`Error writing graph to ${MEMORY_FILE_PATH}:`, writeError); throw writeError; }
   }
 
-  async createEntities(entities: Entity[]): Promise<Entity[]> {
+  // --- Helper to parse observation string into structured data (New) ---
+  private parseObservationContent(content: string): { timestamp?: string; status?: Observation['status']; text: string } {
+      const observationRegex = /^\[([^\]]+)\](?:\s*\[S:([^\]]+)\])?\s*(.*)/;
+      const match = content.match(observationRegex);
+      if (match) {
+          const timestampStr = match[1];
+          const statusStr = match[2]?.trim().toUpperCase();
+          const text = match[3] || ''; // Ensure text is always a string
+
+          let status: Observation['status'] = null;
+          switch (statusStr) {
+              case 'ACTIVE': status = 'Active'; break;
+              case 'RESOLVED': status = 'Resolved'; break;
+              case 'BACKGROUND': status = 'Background'; break;
+              case 'ARCHIVED': status = 'Archived'; break;
+          }
+
+          // Basic validation for timestamp format (ISO 8601)
+          const timestamp = Date.parse(timestampStr) ? timestampStr : undefined;
+
+          return { timestamp, status, text };
+      } else {
+          // No prefix, treat as plain text content
+          return { text: content };
+      }
+  }
+
+  // --- Helper to generate a unique Observation ID (Simple version) ---
+  private generateObservationId(): string {
+      return `obs_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
+  }
+
+
+  // --- Modified Methods ---
+
+  async createEntities(entities: Partial<Entity>[]): Promise<Entity[]> {
     const graph = await this.loadGraph();
-    const newEntities = entities.filter(e => !graph.entities.some(existingEntity => existingEntity.name === e.name))
-      .map(e => ({
-        ...e,
-        aliases: e.aliases || [],
-        createdAt: new Date().toISOString(),
-        version: e.version || 1
-      }));
+    const newEntities = entities
+        .filter(e => e.name && e.entityType && !graph.entities.some(existing => existing.name === e.name))
+        .map(e => ({
+            name: e.name!,
+            entityType: e.entityType!,
+            aliases: e.aliases || [],
+            createdAt: new Date().toISOString(),
+            version: e.version || 1
+        } as Entity)); // Ensure type correctness
     graph.entities.push(...newEntities);
     await this.saveGraph(graph);
     return newEntities;
   }
 
+  // createRelations remains the same structurally
   async createRelations(relations: Relation[]): Promise<Relation[]> {
     const graph = await this.loadGraph();
     const newRelations = relations.filter(r => !graph.relations.some(existingRelation =>
@@ -108,39 +204,86 @@ class KnowledgeGraphManager {
     return newRelations;
   }
 
-  async addObservations(observations: { entityName: string; contents: string[] }[]): Promise<{ entityName: string; addedObservations: string[] }[]> {
-    const graph = await this.loadGraph();
-    const results = observations.map(o => {
-      const entity = graph.entities.find(e => e.name === o.entityName);
-      if (!entity) {
-        throw new Error(`Entity with name ${o.entityName} not found`);
+
+  async addObservations(observationsInput: { entityName: string; contents: string[] }[]): Promise<{ addedObservationIds: string[] }[]> {
+      const graph = await this.loadGraph();
+      const results: { addedObservationIds: string[] }[] = [];
+
+      for (const input of observationsInput) {
+          // Check if entity exists
+          const entity = graph.entities.find(e => e.name === input.entityName);
+          if (!entity) {
+              // Optionally throw error or just skip and log
+              console.warn(`Entity '${input.entityName}' not found. Skipping observations.`);
+              results.push({ addedObservationIds: [] }); // Indicate no observations added for this entity
+              continue;
+          }
+
+          const addedIds: string[] = [];
+          for (const content of input.contents) {
+              // Check if an observation with the exact same entityName and content already exists
+              const alreadyExists = graph.observations.some(obs => obs.entityName === input.entityName && obs.content === content);
+
+              if (!alreadyExists) {
+                  const parsed = this.parseObservationContent(content);
+                  const newObservation: Observation = {
+                      id: this.generateObservationId(),
+                      entityName: input.entityName,
+                      content: content, // Store original full string for now
+                      timestamp: parsed.timestamp,
+                      status: parsed.status,
+                      // text: parsed.text, // Could store just the text part if preferred
+                      createdAt: new Date().toISOString(),
+                      version: 1,
+                  };
+                  graph.observations.push(newObservation);
+                  addedIds.push(newObservation.id);
+              }
+          }
+          results.push({ addedObservationIds: addedIds });
       }
-      const newObservations = o.contents.filter(content => !entity.observations.includes(content));
-      entity.observations.push(...newObservations);
-      return { entityName: o.entityName, addedObservations: newObservations };
-    });
-    await this.saveGraph(graph);
-    return results;
+
+      if (results.some(r => r.addedObservationIds.length > 0)) {
+          await this.saveGraph(graph);
+      }
+      return results;
   }
+
 
   async deleteEntities(entityNames: string[]): Promise<void> {
     const graph = await this.loadGraph();
+    // Delete entities
     graph.entities = graph.entities.filter(e => !entityNames.includes(e.name));
+    // Delete relations involving these entities
     graph.relations = graph.relations.filter(r => !entityNames.includes(r.from) && !entityNames.includes(r.to));
+    // Delete observations associated with these entities
+    graph.observations = graph.observations.filter(o => !entityNames.includes(o.entityName));
     await this.saveGraph(graph);
   }
 
+  // deleteObservations now needs to decide *how* to identify observations to delete.
+  // Option 1: By ID (requires IDs to be passed in, more precise)
+  // Option 2: By entityName + content match (current implementation's spirit)
+  // Let's stick with Option 2 for now to minimize tool interface changes.
   async deleteObservations(deletions: { entityName: string; observations: string[] }[]): Promise<void> {
     const graph = await this.loadGraph();
+    let changed = false;
     deletions.forEach(d => {
-      const entity = graph.entities.find(e => e.name === d.entityName);
-      if (entity) {
-        entity.observations = entity.observations.filter(o => !d.observations.includes(o));
+      const initialCount = graph.observations.length;
+      graph.observations = graph.observations.filter(obs =>
+        // Keep if entityName doesn't match OR if entityName matches but content is NOT in the deletion list
+        !(obs.entityName === d.entityName && d.observations.includes(obs.content))
+      );
+      if (graph.observations.length < initialCount) {
+        changed = true;
       }
     });
-    await this.saveGraph(graph);
+    if (changed) {
+      await this.saveGraph(graph);
+    }
   }
 
+  // deleteRelations remains the same structurally
   async deleteRelations(relations: Relation[]): Promise<void> {
     const graph = await this.loadGraph();
     graph.relations = graph.relations.filter(r => !relations.some(delRelation =>
@@ -151,86 +294,129 @@ class KnowledgeGraphManager {
     await this.saveGraph(graph);
   }
 
+
+  // readGraph remains the same
   async readGraph(): Promise<KnowledgeGraph> {
-    return this.loadGraph();
-  }
-
-  // Very basic search function
-  async searchNodes(queries: string[]): Promise<KnowledgeGraph> {
     const graph = await this.loadGraph();
-
-    // Filter entities: Check if any query matches name, entityType, or observations
-    const filteredEntities = graph.entities.filter(e =>
-      queries.some(query =>
-        e.name.toLowerCase().includes(query.toLowerCase()) ||
-        e.entityType.toLowerCase().includes(query.toLowerCase()) ||
-        e.observations.some(o => o.toLowerCase().includes(query.toLowerCase()))
-      )
-    );
-
-    // Create a Set of filtered entity names for quick lookup
-    const filteredEntityNames = new Set(filteredEntities.map(e => e.name));
-
-    // Filter relations to only include those between filtered entities
-    const filteredRelations = graph.relations.filter(r =>
-      filteredEntityNames.has(r.from) && filteredEntityNames.has(r.to)
-    );
-
-    const filteredGraph: KnowledgeGraph = {
-      entities: filteredEntities,
-      relations: filteredRelations,
-    };
-
-    return filteredGraph;
+    // Filter out archived observations before returning
+    graph.observations = graph.observations.filter(obs => obs.status !== 'Archived');
+    return graph;
   }
 
+
+  // searchNodes needs to search the new observations structure
+  async searchNodes(queries: string[]): Promise<KnowledgeGraph> {
+      const graph = await this.loadGraph();
+      const lowerCaseQueries = queries.map(q => q.toLowerCase());
+
+      // Filter entities based on name, type, aliases
+      const filteredEntities = graph.entities.filter(e =>
+          lowerCaseQueries.some(query =>
+              e.name.toLowerCase().includes(query) ||
+              e.entityType.toLowerCase().includes(query) ||
+              (e.aliases && e.aliases.some(alias => alias.toLowerCase().includes(query)))
+          )
+      );
+
+      // Find entities whose *observations* match
+      const entitiesMatchedByObservation = new Set<string>();
+      graph.observations.forEach(obs => {
+          if (lowerCaseQueries.some(query => obs.content.toLowerCase().includes(query))) {
+              entitiesMatchedByObservation.add(obs.entityName);
+          }
+      });
+
+      // Combine entity sets and get unique names
+      const entityNamesFromObservations = Array.from(entitiesMatchedByObservation);
+      const matchingEntityNames = new Set([
+          ...filteredEntities.map(e => e.name),
+          ...entityNamesFromObservations
+      ]);
+
+      // Get the final list of unique matching entities
+      const finalEntities = graph.entities.filter(e => matchingEntityNames.has(e.name));
+      const finalEntityNamesSet = new Set(finalEntities.map(e => e.name)); // Use the final list for relation filtering
+
+      // Filter relations
+      const filteredRelations = graph.relations.filter(r =>
+          finalEntityNamesSet.has(r.from) && finalEntityNamesSet.has(r.to)
+      );
+
+      // Use 'let' to allow reassignment
+      let filteredObservations = graph.observations.filter(o => finalEntityNamesSet.has(o.entityName));
+      // Filter observations for matching entities AND *exclude archived*
+      filteredObservations = filteredObservations.filter(obs => obs.status !== 'Archived');
+
+      return {
+          entities: finalEntities,
+          relations: filteredRelations,
+          observations: filteredObservations,
+      };
+  }
+
+  // openNodes needs to also retrieve associated observations
   async openNodes(names: string[]): Promise<KnowledgeGraph> {
     const graph = await this.loadGraph();
 
     // Filter entities
     const filteredEntities = graph.entities.filter(e => names.includes(e.name));
-
-    // Create a Set of filtered entity names for quick lookup
     const filteredEntityNames = new Set(filteredEntities.map(e => e.name));
 
-    // Filter relations to only include those between filtered entities
+    // Filter relations
     const filteredRelations = graph.relations.filter(r =>
       filteredEntityNames.has(r.from) && filteredEntityNames.has(r.to)
     );
 
-    const filteredGraph: KnowledgeGraph = {
+    // Use 'let' to allow reassignment
+    let filteredObservations = graph.observations.filter(o => filteredEntityNames.has(o.entityName));
+    // Filter observations for matching entities AND *exclude archived*
+    filteredObservations = filteredObservations.filter(obs => obs.status !== 'Archived');
+
+    return {
       entities: filteredEntities,
       relations: filteredRelations,
+      observations: filteredObservations,
     };
-
-    return filteredGraph;
   }
 
-  async updateEntities(entities: Entity[]): Promise<Entity[]> {
-    const graph = await this.loadGraph();
-    const updatedEntities = entities.map(updateEntity => {
-      const existingEntityIndex = graph.entities.findIndex(e => e.name === updateEntity.name);
-      if (existingEntityIndex === -1) {
-        throw new Error(`Entity with name ${updateEntity.name} not found`);
+  // updateEntities updated to use the specific payload type
+  async updateEntities(entitiesToUpdate: EntityUpdatePayload[]): Promise<Entity[]> {
+      const graph = await this.loadGraph();
+      const updatedEntitiesResult: Entity[] = [];
+
+      entitiesToUpdate.forEach(updateData => {
+          const existingEntityIndex = graph.entities.findIndex(e => e.name === updateData.name);
+          if (existingEntityIndex === -1) {
+              console.warn(`Entity with name ${updateData.name} not found for update. Skipping.`);
+              return; // Skip this update
+          }
+
+          const existingEntity = graph.entities[existingEntityIndex];
+
+          // Create the updated entity, applying only provided fields
+          const newlyUpdatedEntity: Entity = {
+              ...existingEntity, // Start with existing data
+              // Conditionally update fields using the clearer type
+              ...(updateData.entityType !== undefined && { entityType: updateData.entityType }),
+              ...(updateData.aliases !== undefined && { aliases: updateData.aliases }),
+              // Update version and timestamp
+              version: existingEntity.version + 1,
+              createdAt: new Date().toISOString() // Consider if this should be modifiedAt
+          };
+
+          // Replace the old entity with the updated one
+          graph.entities[existingEntityIndex] = newlyUpdatedEntity;
+          updatedEntitiesResult.push(newlyUpdatedEntity);
+      });
+
+      if (updatedEntitiesResult.length > 0) {
+        await this.saveGraph(graph);
       }
-      const existingEntity = graph.entities[existingEntityIndex];
-      
-      const newlyUpdatedEntity = {
-        ...existingEntity,
-        ...updateEntity,
-        aliases: updateEntity.aliases !== undefined ? updateEntity.aliases : existingEntity.aliases,
-        version: existingEntity.version + 1,
-        createdAt: new Date().toISOString()
-      };
-      
-      graph.entities[existingEntityIndex] = newlyUpdatedEntity;
-      return newlyUpdatedEntity;
-    });
-    
-    await this.saveGraph(graph);
-    return updatedEntities;
+      return updatedEntitiesResult;
   }
 
+
+  // updateRelations remains the same structurally
   async updateRelations(relations: Relation[]): Promise<Relation[]> {
     const graph = await this.loadGraph();
     const updatedRelations = relations.map(updateRelation => {
@@ -244,169 +430,154 @@ class KnowledgeGraphManager {
       }
       return {
         ...existingRelation,
-        ...updateRelation,
+        ...updateRelation, // Apply updates from input
         version: existingRelation.version + 1,
-        createdAt: new Date().toISOString()
+        createdAt: new Date().toISOString() // Update timestamp
       };
     });
-    
-    // Update relations in the graph
+
+    // Update relations in the graph (Need to find and replace)
     updatedRelations.forEach(updatedRelation => {
-      const index = graph.relations.findIndex(r =>
-        r.from === updatedRelation.from &&
-        r.to === updatedRelation.to &&
-        r.relationType === updatedRelation.relationType
-      );
-      if (index !== -1) {
-        graph.relations[index] = updatedRelation;
-      }
+        const index = graph.relations.findIndex(r =>
+            r.from === updatedRelation.from &&
+            r.to === updatedRelation.to &&
+            r.relationType === updatedRelation.relationType
+        );
+        if (index !== -1) {
+            graph.relations[index] = updatedRelation;
+        } else {
+            // This case should ideally not happen based on the find logic above, but good to handle
+            console.warn("Could not find relation to update in graph array, though it was found earlier.");
+        }
     });
-    
+
+
     await this.saveGraph(graph);
-    return updatedRelations;
+    return updatedRelations; // Return the updated relations
   }
 
+
+
+  // getContextInfo needs significant changes to fetch observations separately and filter/sort them
   async getContextInfo(inputNames: string[]): Promise<KnowledgeGraph> {
     const graph = await this.loadGraph();
-    const foundCanonicalNames = new Set<string>();
-    const MAX_RECENT_NON_ACTIVE = 5; // Keep the latest 5 non-active timestamped observations
+    const initialMatchingNames = new Set<string>();
+    const MAX_RECENT_NON_ACTIVE = 5;
 
+    // 1. Find canonical names matching input names/aliases
     inputNames.forEach(inputName => {
-      let found = false;
-      // 1. Try exact match on name
       const exactMatch = graph.entities.find(e => e.name === inputName);
       if (exactMatch) {
-        foundCanonicalNames.add(exactMatch.name);
-        found = true;
-      }
-
-      // 2. Try matching aliases if no exact match found yet
-      if (!found) {
+        initialMatchingNames.add(exactMatch.name);
+      } else {
         const aliasMatch = graph.entities.find(e => e.aliases?.includes(inputName));
         if (aliasMatch) {
-          foundCanonicalNames.add(aliasMatch.name);
-          // No need to set found = true, just add the canonical name
+          initialMatchingNames.add(aliasMatch.name);
         }
       }
-      
-      // TODO: Consider adding Levenshtein distance check here as a fallback if still not found
     });
 
-    // Filter entities based on found canonical names
-    const filteredEntities = graph.entities
-      .filter(e => foundCanonicalNames.has(e.name))
-      .map(entity => {
-          // Now filter the observations for this entity
-          const activeObservations: string[] = [];
-          const timestampedNonActive: { timestamp: Date; observation: string }[] = [];
-          const untimestampedObservations: string[] = [];
-
-          // Regex to parse "[timestamp] [S:Status] content" or "[timestamp] content"
-          // Allows for optional status tag
-          const observationRegex = /^\[([^\]]+)\](?:\s*\[S:([^\]]+)\])?\s*(.*)/;
-
-          entity.observations.forEach(obs => {
-              const match = obs.match(observationRegex);
-              if (match) {
-                  const timestampStr = match[1];
-                  const status = match[2]?.trim().toUpperCase(); // Get status if present
-                  const content = match[3];
-                  const timestamp = new Date(timestampStr);
-
-                  if (!isNaN(timestamp.getTime())) { // Check if timestamp is valid
-                      if (status === 'ACTIVE') {
-                          activeObservations.push(obs); // Keep original string
-                      } else {
-                          timestampedNonActive.push({ timestamp, observation: obs });
-                      }
-                  } else {
-                      // Invalid timestamp format, treat as untimestamped
-                      untimestampedObservations.push(obs);
-                  }
-              } else {
-                  // No timestamp prefix found
-                  untimestampedObservations.push(obs);
-              }
-          });
-
-          // Sort timestamped non-active observations by date, descending (most recent first)
-          timestampedNonActive.sort((a, b) => b.timestamp.getTime() - a.timestamp.getTime());
-
-          // Take the top N most recent non-active timestamped observations
-          const recentNonActive = timestampedNonActive
-              .slice(0, MAX_RECENT_NON_ACTIVE)
-              .map(item => item.observation);
-
-          // Combine filtered observations: Active + Recent Non-Active + Untimestamped
-          const filteredObservations = [
-              ...activeObservations,
-              ...recentNonActive,
-              ...untimestampedObservations
-          ];
-
-          // Return the entity with filtered observations
-          return { ...entity, observations: filteredObservations };
-      });
-
-
-    // Filter relations to only include those between the found (and now observation-filtered) entities
-    const filteredRelations = graph.relations.filter(r =>
-      foundCanonicalNames.has(r.from) && foundCanonicalNames.has(r.to)
+    // 2. Find relations directly connected to these initial entities (Used to find all entities)
+    const directlyConnectedRelations = graph.relations.filter(r =>
+      initialMatchingNames.has(r.from) || initialMatchingNames.has(r.to)
     );
 
+    // 3. Collect *all* unique entity names involved (Unchanged)
+    const finalEntityNames = new Set<string>(initialMatchingNames);
+    directlyConnectedRelations.forEach(r => { // Use the relations found in step 2 to expand entity set
+      finalEntityNames.add(r.from);
+      finalEntityNames.add(r.to);
+    });
+
+    // 4. Filter entities based on the final, complete set of names (Unchanged)
+    const finalEntities = graph.entities.filter(e => finalEntityNames.has(e.name));
+
+    // *** CORRECTED STEP 5: Filter relations where *both* ends are in the final entity set ***
+    const finalRelations = graph.relations.filter(r =>
+        finalEntityNames.has(r.from) && finalEntityNames.has(r.to)
+    );
+
+    // 6. Filter and process observations for *all* entities in the final set (Unchanged)
+    const relevantObservationsRaw = graph.observations.filter(o => finalEntityNames.has(o.entityName));
+    // ... (Processing logic for active/recent/untimestamped observations - Unchanged) ...
+    const activeObservations: Observation[] = [];
+    const timestampedNonActive: { timestamp: Date; observation: Observation }[] = [];
+    const untimestampedObservations: Observation[] = [];
+
+    relevantObservationsRaw.forEach(obs => {
+       if (obs.timestamp) {
+        const timestamp = new Date(obs.timestamp);
+        if (!isNaN(timestamp.getTime())) {
+          if (obs.status === 'Active') {
+            activeObservations.push(obs);
+          } else {
+            timestampedNonActive.push({ timestamp, observation: obs });
+          }
+        } else {
+          untimestampedObservations.push(obs);
+        }
+      } else {
+        untimestampedObservations.push(obs);
+      }
+    });
+    timestampedNonActive.sort((a, b) => b.timestamp.getTime() - a.timestamp.getTime());
+    const recentNonActive = timestampedNonActive
+        .slice(0, MAX_RECENT_NON_ACTIVE)
+        .map(item => item.observation);
+    const finalObservations = [
+        ...activeObservations,
+        ...recentNonActive,
+        ...untimestampedObservations
+    ];
+
+
+    // 7. Return the final entities, the *corrected* final relations, and processed observations
     return {
-      entities: filteredEntities,
-      relations: filteredRelations,
+      entities: finalEntities,
+      relations: finalRelations, // Use the correctly filtered relations
+      observations: finalObservations,
     };
   }
-}
+} // End of KnowledgeGraphManager class
 
 const knowledgeGraphManager = new KnowledgeGraphManager();
 
 
 // The server instance and tools exposed to Claude
 const server = new Server({
-  name: "@itseasy21/mcp-knowledge-graph",
-  version: "1.0.7",
-},    {
-    capabilities: {
-      tools: {},
-    },
-  },);
+  name: "@itseasy21/mcp-knowledge-graph", // Update name if needed
+  version: "1.1.0", // Increment version due to significant change
+}, {
+  capabilities: {
+    tools: {},
+  },
+},);
 
 server.setRequestHandler(ListToolsRequestSchema, async () => {
+  // Ensure all tool schemas are complete and correct
   return {
     tools: [
       {
-        name: "create_entities",
-        description: "Create multiple new entities in the knowledge graph",
-        inputSchema: {
-          type: "object",
-          properties: {
-            entities: {
-              type: "array",
-              items: {
-                type: "object",
-                properties: {
-                  name: { type: "string", description: "The canonical name of the entity (e.g., Type-Name)" },
-                  entityType: { type: "string", description: "The type of the entity (e.g., Character, Location)" },
-                  aliases: { 
-                    type: "array", 
-                    items: { type: "string" },
-                    description: "Optional list of alternative names or aliases (e.g., just the Name part)" 
+          name: "create_entities",
+          description: "Create multiple new entities (without observations) in the knowledge graph. Add observations separately using 'add_observations'.",
+          inputSchema: {
+              type: "object",
+              properties: {
+                  entities: {
+                      type: "array",
+                      items: {
+                          type: "object",
+                          properties: {
+                              name: { type: "string", description: "The canonical name (e.g., Type-Name)" },
+                              entityType: { type: "string", description: "The type (e.g., Character)" },
+                              aliases: { type: "array", items: { type: "string" }, description: "Optional aliases" }
+                          },
+                          required: ["name", "entityType"],
+                      },
                   },
-                  observations: {
-                    type: "array",
-                    items: { type: "string" },
-                    description: "An array of observation contents associated with the entity (e.g., 'Key: Value')"
-                  },
-                },
-                required: ["name", "entityType", "observations"],
               },
-            },
+              required: ["entities"],
           },
-          required: ["entities"],
-        },
       },
       {
         name: "create_relations",
@@ -432,7 +603,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       },
       {
         name: "add_observations",
-        description: "Add new observations to existing entities in the knowledge graph",
+        description: "Add new observations associated with existing entities. Parses content for timestamp/status.",
         inputSchema: {
           type: "object",
           properties: {
@@ -441,11 +612,11 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
               items: {
                 type: "object",
                 properties: {
-                  entityName: { type: "string", description: "The name of the entity to add the observations to" },
+                  entityName: { type: "string", description: "The name of the entity the observation is about" },
                   contents: {
                     type: "array",
                     items: { type: "string" },
-                    description: "An array of observation contents to add"
+                    description: "An array of observation contents to add (e.g., '[ISO_Date] [S:Status] Text')"
                   },
                 },
                 required: ["entityName", "contents"],
@@ -457,22 +628,22 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       },
       {
         name: "delete_entities",
-        description: "Delete multiple entities and their associated relations from the knowledge graph",
+        description: "Delete multiple entities and their associated relations and observations from the knowledge graph",
         inputSchema: {
-          type: "object",
-          properties: {
-            entityNames: {
-              type: "array",
-              items: { type: "string" },
-              description: "An array of entity names to delete"
-            },
-          },
-          required: ["entityNames"],
-        },
+         type: "object",
+         properties: {
+           entityNames: {
+             type: "array",
+             items: { type: "string" },
+             description: "An array of entity names to delete"
+           },
+         },
+         required: ["entityNames"],
+       },
       },
       {
         name: "delete_observations",
-        description: "Delete specific observations from entities in the knowledge graph",
+        description: "Delete specific observations by matching entity name and content string",
         inputSchema: {
           type: "object",
           properties: {
@@ -485,7 +656,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
                   observations: {
                     type: "array",
                     items: { type: "string" },
-                    description: "An array of observations to delete"
+                    description: "An array of observation content strings to delete"
                   },
                 },
                 required: ["entityName", "observations"],
@@ -520,29 +691,29 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       },
       {
         name: "read_graph",
-        description: "Read the entire knowledge graph",
+        description: "Read the entire knowledge graph (entities, relations, observations)",
         inputSchema: {
           type: "object",
-          properties: {},
+          properties: {}, // No arguments needed
         },
       },
       {
         name: "search_nodes",
-        description: "Search for nodes in the knowledge graph based on a query",
+        description: "Search for entities based on query (matching name, type, aliases, or observation content). Returns matching entities, their relations, and their observations.",
         inputSchema: {
           type: "object",
           properties: {
-            query: { 
+            query: {
               type: "array",
               items: { type: "string" },
-              description: "The search query to match against entity names, types, and observation content" },
+              description: "The search query terms" },
           },
           required: ["query"],
         },
       },
       {
         name: "open_nodes",
-        description: "Open specific nodes in the knowledge graph by their names",
+        description: "Open specific nodes by name. Returns the entities, their relations, and their observations.",
         inputSchema: {
           type: "object",
           properties: {
@@ -556,35 +727,26 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
         },
       },
       {
-        name: "update_entities",
-        description: "Update multiple existing entities in the knowledge graph. Only fields provided will be updated.",
-        inputSchema: {
-          type: "object",
-          properties: {
-            entities: {
-              type: "array",
-              items: {
-                type: "object",
-                properties: {
-                  name: { type: "string", description: "The canonical name of the entity to update" },
-                  entityType: { type: "string", description: "The updated type of the entity" },
-                  aliases: { 
-                    type: "array", 
-                    items: { type: "string" },
-                    description: "Optional updated list of alternative names or aliases. Providing this overwrites the existing list." 
+          name: "update_entities",
+          description: "Update fields (like type or aliases) of existing entities. Does not update observations.",
+          inputSchema: {
+              type: "object",
+              properties: {
+                  entities: {
+                      type: "array",
+                      items: {
+                          type: "object",
+                          properties: {
+                              name: { type: "string", description: "Name of entity to update" },
+                              entityType: { type: "string", description: "Optional new type" },
+                              aliases: { type: "array", items: { type: "string" }, description: "Optional new list of aliases" }
+                          },
+                          required: ["name"],
+                      },
                   },
-                  observations: {
-                    type: "array",
-                    items: { type: "string" },
-                    description: "The updated array of observation contents. Providing this overwrites the existing list."
-                  },
-                },
-                required: ["name"],
               },
-            },
+              required: ["entities"],
           },
-          required: ["entities"],
-        },
       },
       {
         name: "update_relations",
@@ -599,7 +761,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
                 properties: {
                   from: { type: "string", description: "The name of the entity where the relation starts" },
                   to: { type: "string", description: "The name of the entity where the relation ends" },
-                  relationType: { type: "string", description: "The type of the relation" },
+                  relationType: { type: "string", description: "The type of the relation to identify it" },
                 },
                 required: ["from", "to", "relationType"],
               },
@@ -610,14 +772,14 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       },
       {
         name: "get_context_info",
-        description: "Retrieves detailed information for a specified list of entities and their direct relationships, attempting to match provided names against canonical names and aliases.",
+        description: "Retrieves detailed context for specified entities (matching names/aliases). Returns entities, their relations, and a filtered/sorted list of their observations (Active first, then recent history, then untimestamped).",
         inputSchema: {
             type: "object",
             properties: {
-                entityNames: { 
-                    type: "array", 
-                    items: { type: "string" }, 
-                    description: "A list of entity names (or potential aliases) to retrieve context for." 
+                entityNames: {
+                    type: "array",
+                    items: { type: "string" },
+                    description: "A list of entity names (or potential aliases) to retrieve context for."
                 }
             },
             required: ["entityNames"]
@@ -627,6 +789,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
   };
 });
 
+
 server.setRequestHandler(CallToolRequestSchema, async (request) => {
   const { name, arguments: args } = request.params;
 
@@ -634,43 +797,53 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     throw new Error(`No arguments provided for tool: ${name}`);
   }
 
+  // Adjust handlers to match modified manager methods and return types
   switch (name) {
     case "create_entities":
-      return { content: [{ type: "text", text: JSON.stringify(await knowledgeGraphManager.createEntities(args.entities as Entity[]), null, 2) }] };
+      // Note: The input type here needs adjustment based on schema changes if we were fully precise
+      return { content: [{ type: "text", text: JSON.stringify(await knowledgeGraphManager.createEntities(args.entities as any[]), null, 2) }] };
     case "create_relations":
       return { content: [{ type: "text", text: JSON.stringify(await knowledgeGraphManager.createRelations(args.relations as Relation[]), null, 2) }] };
     case "add_observations":
+      // Return type changed to { addedObservationIds: string[] }[]
       return { content: [{ type: "text", text: JSON.stringify(await knowledgeGraphManager.addObservations(args.observations as { entityName: string; contents: string[] }[]), null, 2) }] };
     case "delete_entities":
       await knowledgeGraphManager.deleteEntities(args.entityNames as string[]);
-      return { content: [{ type: "text", text: "Entities deleted successfully" }] };
+      return { content: [{ type: "text", text: "Entities and associated relations/observations deleted successfully" }] }; // Updated text
     case "delete_observations":
       await knowledgeGraphManager.deleteObservations(args.deletions as { entityName: string; observations: string[] }[]);
-      return { content: [{ type: "text", text: "Observations deleted successfully" }] };
+      return { content: [{ type: "text", text: "Observations deleted successfully based on content match" }] }; // Updated text
     case "delete_relations":
       await knowledgeGraphManager.deleteRelations(args.relations as Relation[]);
       return { content: [{ type: "text", text: "Relations deleted successfully" }] };
     case "read_graph":
+      // Return type now includes top-level observations array
       return { content: [{ type: "text", text: JSON.stringify(await knowledgeGraphManager.readGraph(), null, 2) }] };
     case "search_nodes":
+      // Return type now includes top-level observations array
       return { content: [{ type: "text", text: JSON.stringify(await knowledgeGraphManager.searchNodes(args.query as string[]), null, 2) }] };
     case "open_nodes":
+      // Return type now includes top-level observations array
       return { content: [{ type: "text", text: JSON.stringify(await knowledgeGraphManager.openNodes(args.names as string[]), null, 2) }] };
     case "update_entities":
-      return { content: [{ type: "text", text: JSON.stringify(await knowledgeGraphManager.updateEntities(args.entities as Entity[]), null, 2) }] };
+       // Use the specific payload type for casting
+      return { content: [{ type: "text", text: JSON.stringify(await knowledgeGraphManager.updateEntities(args.entities as EntityUpdatePayload[]), null, 2) }] };
     case "update_relations":
       return { content: [{ type: "text", text: JSON.stringify(await knowledgeGraphManager.updateRelations(args.relations as Relation[]), null, 2) }] };
     case "get_context_info":
+      // Return type now includes top-level observations array (filtered)
       return { content: [{ type: "text", text: JSON.stringify(await knowledgeGraphManager.getContextInfo(args.entityNames as string[]), null, 2) }] };
     default:
       throw new Error(`Unknown tool: ${name}`);
   }
 });
 
+// main function remains the same
+
 async function main() {
   const transport = new StdioServerTransport();
   await server.connect(transport);
-  console.error("Knowledge Graph MCP Server running on stdio");
+  console.error("Knowledge Graph MCP Server (v1.1.0 - Observations Refactored) running on stdio"); // Updated startup message
 }
 
 main().catch((error) => {
