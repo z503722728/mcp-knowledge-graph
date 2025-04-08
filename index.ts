@@ -31,6 +31,7 @@ const MEMORY_FILE_PATH = memoryPath || path.join(__dirname, 'memory.jsonl');
 interface Entity {
   name: string;
   entityType: string;
+  aliases?: string[];
   observations: string[];
   createdAt: string;
   version: number;
@@ -82,6 +83,7 @@ class KnowledgeGraphManager {
     const newEntities = entities.filter(e => !graph.entities.some(existingEntity => existingEntity.name === e.name))
       .map(e => ({
         ...e,
+        aliases: e.aliases || [],
         createdAt: new Date().toISOString(),
         version: e.version || 1
       }));
@@ -207,24 +209,22 @@ class KnowledgeGraphManager {
   async updateEntities(entities: Entity[]): Promise<Entity[]> {
     const graph = await this.loadGraph();
     const updatedEntities = entities.map(updateEntity => {
-      const existingEntity = graph.entities.find(e => e.name === updateEntity.name);
-      if (!existingEntity) {
+      const existingEntityIndex = graph.entities.findIndex(e => e.name === updateEntity.name);
+      if (existingEntityIndex === -1) {
         throw new Error(`Entity with name ${updateEntity.name} not found`);
       }
-      return {
+      const existingEntity = graph.entities[existingEntityIndex];
+      
+      const newlyUpdatedEntity = {
         ...existingEntity,
         ...updateEntity,
+        aliases: updateEntity.aliases !== undefined ? updateEntity.aliases : existingEntity.aliases,
         version: existingEntity.version + 1,
         createdAt: new Date().toISOString()
       };
-    });
-    
-    // Update entities in the graph
-    updatedEntities.forEach(updatedEntity => {
-      const index = graph.entities.findIndex(e => e.name === updatedEntity.name);
-      if (index !== -1) {
-        graph.entities[index] = updatedEntity;
-      }
+      
+      graph.entities[existingEntityIndex] = newlyUpdatedEntity;
+      return newlyUpdatedEntity;
     });
     
     await this.saveGraph(graph);
@@ -265,6 +265,100 @@ class KnowledgeGraphManager {
     await this.saveGraph(graph);
     return updatedRelations;
   }
+
+  async getContextInfo(inputNames: string[]): Promise<KnowledgeGraph> {
+    const graph = await this.loadGraph();
+    const foundCanonicalNames = new Set<string>();
+    const MAX_RECENT_NON_ACTIVE = 5; // Keep the latest 5 non-active timestamped observations
+
+    inputNames.forEach(inputName => {
+      let found = false;
+      // 1. Try exact match on name
+      const exactMatch = graph.entities.find(e => e.name === inputName);
+      if (exactMatch) {
+        foundCanonicalNames.add(exactMatch.name);
+        found = true;
+      }
+
+      // 2. Try matching aliases if no exact match found yet
+      if (!found) {
+        const aliasMatch = graph.entities.find(e => e.aliases?.includes(inputName));
+        if (aliasMatch) {
+          foundCanonicalNames.add(aliasMatch.name);
+          // No need to set found = true, just add the canonical name
+        }
+      }
+      
+      // TODO: Consider adding Levenshtein distance check here as a fallback if still not found
+    });
+
+    // Filter entities based on found canonical names
+    const filteredEntities = graph.entities
+      .filter(e => foundCanonicalNames.has(e.name))
+      .map(entity => {
+          // Now filter the observations for this entity
+          const activeObservations: string[] = [];
+          const timestampedNonActive: { timestamp: Date; observation: string }[] = [];
+          const untimestampedObservations: string[] = [];
+
+          // Regex to parse "[timestamp] [S:Status] content" or "[timestamp] content"
+          // Allows for optional status tag
+          const observationRegex = /^\[([^\]]+)\](?:\s*\[S:([^\]]+)\])?\s*(.*)/;
+
+          entity.observations.forEach(obs => {
+              const match = obs.match(observationRegex);
+              if (match) {
+                  const timestampStr = match[1];
+                  const status = match[2]?.trim().toUpperCase(); // Get status if present
+                  const content = match[3];
+                  const timestamp = new Date(timestampStr);
+
+                  if (!isNaN(timestamp.getTime())) { // Check if timestamp is valid
+                      if (status === 'ACTIVE') {
+                          activeObservations.push(obs); // Keep original string
+                      } else {
+                          timestampedNonActive.push({ timestamp, observation: obs });
+                      }
+                  } else {
+                      // Invalid timestamp format, treat as untimestamped
+                      untimestampedObservations.push(obs);
+                  }
+              } else {
+                  // No timestamp prefix found
+                  untimestampedObservations.push(obs);
+              }
+          });
+
+          // Sort timestamped non-active observations by date, descending (most recent first)
+          timestampedNonActive.sort((a, b) => b.timestamp.getTime() - a.timestamp.getTime());
+
+          // Take the top N most recent non-active timestamped observations
+          const recentNonActive = timestampedNonActive
+              .slice(0, MAX_RECENT_NON_ACTIVE)
+              .map(item => item.observation);
+
+          // Combine filtered observations: Active + Recent Non-Active + Untimestamped
+          const filteredObservations = [
+              ...activeObservations,
+              ...recentNonActive,
+              ...untimestampedObservations
+          ];
+
+          // Return the entity with filtered observations
+          return { ...entity, observations: filteredObservations };
+      });
+
+
+    // Filter relations to only include those between the found (and now observation-filtered) entities
+    const filteredRelations = graph.relations.filter(r =>
+      foundCanonicalNames.has(r.from) && foundCanonicalNames.has(r.to)
+    );
+
+    return {
+      entities: filteredEntities,
+      relations: filteredRelations,
+    };
+  }
 }
 
 const knowledgeGraphManager = new KnowledgeGraphManager();
@@ -294,12 +388,17 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
               items: {
                 type: "object",
                 properties: {
-                  name: { type: "string", description: "The name of the entity" },
-                  entityType: { type: "string", description: "The type of the entity" },
+                  name: { type: "string", description: "The canonical name of the entity (e.g., Type-Name)" },
+                  entityType: { type: "string", description: "The type of the entity (e.g., Character, Location)" },
+                  aliases: { 
+                    type: "array", 
+                    items: { type: "string" },
+                    description: "Optional list of alternative names or aliases (e.g., just the Name part)" 
+                  },
                   observations: {
                     type: "array",
                     items: { type: "string" },
-                    description: "An array of observation contents associated with the entity"
+                    description: "An array of observation contents associated with the entity (e.g., 'Key: Value')"
                   },
                 },
                 required: ["name", "entityType", "observations"],
@@ -458,7 +557,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       },
       {
         name: "update_entities",
-        description: "Update multiple existing entities in the knowledge graph",
+        description: "Update multiple existing entities in the knowledge graph. Only fields provided will be updated.",
         inputSchema: {
           type: "object",
           properties: {
@@ -467,12 +566,17 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
               items: {
                 type: "object",
                 properties: {
-                  name: { type: "string", description: "The name of the entity to update" },
+                  name: { type: "string", description: "The canonical name of the entity to update" },
                   entityType: { type: "string", description: "The updated type of the entity" },
+                  aliases: { 
+                    type: "array", 
+                    items: { type: "string" },
+                    description: "Optional updated list of alternative names or aliases. Providing this overwrites the existing list." 
+                  },
                   observations: {
                     type: "array",
                     items: { type: "string" },
-                    description: "The updated array of observation contents"
+                    description: "The updated array of observation contents. Providing this overwrites the existing list."
                   },
                 },
                 required: ["name"],
@@ -503,6 +607,21 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
           },
           required: ["relations"],
         },
+      },
+      {
+        name: "get_context_info",
+        description: "Retrieves detailed information for a specified list of entities and their direct relationships, attempting to match provided names against canonical names and aliases.",
+        inputSchema: {
+            type: "object",
+            properties: {
+                entityNames: { 
+                    type: "array", 
+                    items: { type: "string" }, 
+                    description: "A list of entity names (or potential aliases) to retrieve context for." 
+                }
+            },
+            required: ["entityNames"]
+        }
       },
     ],
   };
@@ -541,6 +660,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       return { content: [{ type: "text", text: JSON.stringify(await knowledgeGraphManager.updateEntities(args.entities as Entity[]), null, 2) }] };
     case "update_relations":
       return { content: [{ type: "text", text: JSON.stringify(await knowledgeGraphManager.updateRelations(args.relations as Relation[]), null, 2) }] };
+    case "get_context_info":
+      return { content: [{ type: "text", text: JSON.stringify(await knowledgeGraphManager.getContextInfo(args.entityNames as string[]), null, 2) }] };
     default:
       throw new Error(`Unknown tool: ${name}`);
   }

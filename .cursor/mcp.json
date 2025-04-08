@@ -1,0 +1,12 @@
+{
+    "mcpServers": {
+      "memory": {
+        "command": "node",
+        "args": [
+          "F:\\小说\\mcp-knowledge-graph\\dist\\index.js",
+          "--memory-path",
+          "F:\\小说\\mcp-knowledge-graph\\memermesh\\memory.jsonl"
+        ]
+      }
+    }
+  }
