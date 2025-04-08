@@ -433,7 +433,10 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
         inputSchema: {
           type: "object",
           properties: {
-            query: { type: "string", description: "The search query to match against entity names, types, and observation content" },
+            query: { 
+              type: "array",
+              items: { type: "string" },
+              description: "The search query to match against entity names, types, and observation content" },
           },
           required: ["query"],
         },
