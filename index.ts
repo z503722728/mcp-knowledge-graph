@@ -110,18 +110,7 @@ class KnowledgeGraphManager {
         }
     }
 
-    // --- Startup Cleanup Logic (remains the same) ---
-    const initialCount = graph.observations.length;
-    graph.observations = graph.observations.filter(obs => obs.status !== 'Archived');
-    const removedCount = initialCount - graph.observations.length;
-    if (removedCount > 0) {
-        console.log(`[KnowledgeGraphManager] Performed startup cleanup. Removed ${removedCount} archived observations from loaded graph.`);
-    } else {
-         console.log("[KnowledgeGraphManager] Startup: No archived observations found in loaded graph.");
-    }
-    // --- End Startup Cleanup Logic ---
-
-    return graph; // Return the potentially cleaned graph
+    return graph; // Return the graph as loaded
   }
 
   private async saveGraph(graph: KnowledgeGraph): Promise<void> {
@@ -168,6 +157,22 @@ class KnowledgeGraphManager {
       return `obs_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
   }
 
+  // --- NEW: Method for Startup Cleanup ---
+  async performStartupCleanup(): Promise<void> {
+      console.log("[KnowledgeGraphManager] Performing startup cleanup of archived observations...");
+      let graph = await this.loadGraph(); // Load the potentially unclean graph
+      const initialCount = graph.observations.length;
+      // Filter out archived observations
+      graph.observations = graph.observations.filter(obs => obs.status !== 'Archived');
+      const removedCount = initialCount - graph.observations.length;
+
+      if (removedCount > 0) {
+          console.log(`[KnowledgeGraphManager] Startup Cleanup: Removed ${removedCount} archived observations. Saving cleaned graph.`);
+          await this.saveGraph(graph); // Save the cleaned graph back to the file
+      } else {
+          console.log("[KnowledgeGraphManager] Startup Cleanup: No archived observations found to remove.");
+      }
+  }
 
   // --- Modified Methods ---
 
@@ -298,8 +303,6 @@ class KnowledgeGraphManager {
   // readGraph remains the same
   async readGraph(): Promise<KnowledgeGraph> {
     const graph = await this.loadGraph();
-    // Filter out archived observations before returning
-    graph.observations = graph.observations.filter(obs => obs.status !== 'Archived');
     return graph;
   }
 
@@ -342,10 +345,8 @@ class KnowledgeGraphManager {
           finalEntityNamesSet.has(r.from) && finalEntityNamesSet.has(r.to)
       );
 
-      // Use 'let' to allow reassignment
-      let filteredObservations = graph.observations.filter(o => finalEntityNamesSet.has(o.entityName));
-      // Filter observations for matching entities AND *exclude archived*
-      filteredObservations = filteredObservations.filter(obs => obs.status !== 'Archived');
+      // Filter observations for matching entities (Archived already removed at startup)
+      const filteredObservations = graph.observations.filter(o => finalEntityNamesSet.has(o.entityName));
 
       return {
           entities: finalEntities,
@@ -367,10 +368,8 @@ class KnowledgeGraphManager {
       filteredEntityNames.has(r.from) && filteredEntityNames.has(r.to)
     );
 
-    // Use 'let' to allow reassignment
-    let filteredObservations = graph.observations.filter(o => filteredEntityNames.has(o.entityName));
-    // Filter observations for matching entities AND *exclude archived*
-    filteredObservations = filteredObservations.filter(obs => obs.status !== 'Archived');
+    // Filter observations for matching entities (Archived already removed at startup)
+    const filteredObservations = graph.observations.filter(o => filteredEntityNames.has(o.entityName));
 
     return {
       entities: filteredEntities,
@@ -460,9 +459,11 @@ class KnowledgeGraphManager {
 
   // getContextInfo needs significant changes to fetch observations separately and filter/sort them
   async getContextInfo(inputNames: string[]): Promise<KnowledgeGraph> {
-    const graph = await this.loadGraph();
+    const graph = await this.loadGraph(); // Loads the already cleaned graph
     const initialMatchingNames = new Set<string>();
     const MAX_RECENT_NON_ACTIVE = 5;
+    const MAX_RECENT_ACTIVE = 15; // Limit for Active observations
+    const MAX_UNTIMESTAMPED = 10; // NEW: Limit for Untimestamped observations
 
     // 1. Find canonical names matching input names/aliases
     inputNames.forEach(inputName => {
@@ -497,37 +498,53 @@ class KnowledgeGraphManager {
         finalEntityNames.has(r.from) && finalEntityNames.has(r.to)
     );
 
-    // 6. Filter and process observations for *all* entities in the final set (Unchanged)
+    // 6. Filter and process observations for *all* entities in the final set (Modified)
     const relevantObservationsRaw = graph.observations.filter(o => finalEntityNames.has(o.entityName));
-    // ... (Processing logic for active/recent/untimestamped observations - Unchanged) ...
-    const activeObservations: Observation[] = [];
+
+    const activeObservationsWithTimestamp: { timestamp: Date; observation: Observation }[] = [];
     const timestampedNonActive: { timestamp: Date; observation: Observation }[] = [];
     const untimestampedObservations: Observation[] = [];
 
     relevantObservationsRaw.forEach(obs => {
-       if (obs.timestamp) {
+      if (obs.timestamp) {
         const timestamp = new Date(obs.timestamp);
         if (!isNaN(timestamp.getTime())) {
           if (obs.status === 'Active') {
-            activeObservations.push(obs);
+            // Add Active observations with valid timestamps to a list for sorting
+            activeObservationsWithTimestamp.push({ timestamp, observation: obs });
           } else {
             timestampedNonActive.push({ timestamp, observation: obs });
           }
         } else {
+          // Invalid timestamp or no timestamp but has 'timestamp' field (edge case)
           untimestampedObservations.push(obs);
         }
       } else {
+        // No timestamp field at all
         untimestampedObservations.push(obs);
       }
     });
+
+    // Sort Active observations by timestamp descending (newest first)
+    activeObservationsWithTimestamp.sort((a, b) => b.timestamp.getTime() - a.timestamp.getTime());
+    // Take only the most recent MAX_RECENT_ACTIVE observations
+    const recentActive = activeObservationsWithTimestamp
+        .slice(0, MAX_RECENT_ACTIVE)
+        .map(item => item.observation);
+
+
+    // Sort Timestamped Non-Active observations by timestamp descending (newest first)
     timestampedNonActive.sort((a, b) => b.timestamp.getTime() - a.timestamp.getTime());
+    // Take only the most recent MAX_RECENT_NON_ACTIVE observations
     const recentNonActive = timestampedNonActive
         .slice(0, MAX_RECENT_NON_ACTIVE)
         .map(item => item.observation);
+
+    // Combine the results: Recent Active + Recent Non-Active + Limited Untimestamped
     const finalObservations = [
-        ...activeObservations,
+        ...recentActive,
         ...recentNonActive,
-        ...untimestampedObservations
+        ...untimestampedObservations.slice(0, MAX_UNTIMESTAMPED) // Apply limit here
     ];
 
 
@@ -540,13 +557,14 @@ class KnowledgeGraphManager {
   }
 } // End of KnowledgeGraphManager class
 
+// Instantiate the manager globally so it can be used by main and server handlers
 const knowledgeGraphManager = new KnowledgeGraphManager();
 
 
 // The server instance and tools exposed to Claude
 const server = new Server({
   name: "@itseasy21/mcp-knowledge-graph", // Update name if needed
-  version: "1.1.0", // Increment version due to significant change
+  version: "1.1.1", // Increment version due to significant change
 }, {
   capabilities: {
     tools: {},
@@ -832,7 +850,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       return { content: [{ type: "text", text: JSON.stringify(await knowledgeGraphManager.updateRelations(args.relations as Relation[]), null, 2) }] };
     case "get_context_info":
       // Return type now includes top-level observations array (filtered)
-      return { content: [{ type: "text", text: JSON.stringify(await knowledgeGraphManager.getContextInfo(args.entityNames as string[]), null, 2) }] };
+      return { content: [{ type: "text", text: JSON.stringify(await knowledgeGraphManager.getContextInfo(args.entityNames as string[])) }] };
     default:
       throw new Error(`Unknown tool: ${name}`);
   }
@@ -841,9 +859,12 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 // main function remains the same
 
 async function main() {
+  // Perform startup cleanup using the global manager instance
+  await knowledgeGraphManager.performStartupCleanup();
+
   const transport = new StdioServerTransport();
   await server.connect(transport);
-  console.error("Knowledge Graph MCP Server (v1.1.0 - Observations Refactored) running on stdio"); // Updated startup message
+  console.error("Knowledge Graph MCP Server (v1.1.1 - Startup Cleanup & Limits) running on stdio"); // Update version/startup message
 }
 
 main().catch((error) => {
