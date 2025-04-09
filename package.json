@@ -1,7 +1,7 @@
 {
   "name": "@z503722728/mcp-knowledge-graph",
-  "version": "1.0.9",
-  "description": "MCP server enabling persistent memory for Claude through a local knowledge graph",
+  "version": "1.1.0",
+  "description": "MCP server enabling persistent memory for Claude through a local knowledge graph with refactored observation handling",
   "license": "MIT",
   "author": "z503722728",
   "homepage": "https://github.com/z503722728/mcp-knowledge-graph",
