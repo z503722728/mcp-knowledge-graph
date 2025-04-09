@@ -463,9 +463,9 @@ class KnowledgeGraphManager {
     const initialMatchingNames = new Set<string>();
     const MAX_RECENT_NON_ACTIVE = 5;
     const MAX_RECENT_ACTIVE = 15; // Limit for Active observations
-    const MAX_UNTIMESTAMPED = 10; // NEW: Limit for Untimestamped observations
+    const MAX_UNTIMESTAMPED = 10; // Limit for Untimestamped observations
 
-    // 1. Find canonical names matching input names/aliases
+    // 1. Find canonical names matching input names/aliases (Unchanged)
     inputNames.forEach(inputName => {
       const exactMatch = graph.entities.find(e => e.name === inputName);
       if (exactMatch) {
@@ -478,27 +478,30 @@ class KnowledgeGraphManager {
       }
     });
 
-    // 2. Find relations directly connected to these initial entities (Used to find all entities)
-    const directlyConnectedRelations = graph.relations.filter(r =>
+    // If no initial entities found, return empty graph
+    if (initialMatchingNames.size === 0) {
+        return { entities: [], relations: [], observations: [] };
+    }
+
+    // 2. Find relations *directly involving* the initial entities (MODIFIED)
+    const directlyInvolvingRelations = graph.relations.filter(r =>
       initialMatchingNames.has(r.from) || initialMatchingNames.has(r.to)
     );
 
-    // 3. Collect *all* unique entity names involved (Unchanged)
+    // 3. Collect unique entity names involved: initial entities + entities connected by the direct relations (MODIFIED)
     const finalEntityNames = new Set<string>(initialMatchingNames);
-    directlyConnectedRelations.forEach(r => { // Use the relations found in step 2 to expand entity set
+    directlyInvolvingRelations.forEach(r => {
       finalEntityNames.add(r.from);
       finalEntityNames.add(r.to);
     });
 
-    // 4. Filter entities based on the final, complete set of names (Unchanged)
+    // 4. Filter entities based on the final set of names (Uses the modified finalEntityNames)
     const finalEntities = graph.entities.filter(e => finalEntityNames.has(e.name));
 
-    // *** CORRECTED STEP 5: Filter relations where *both* ends are in the final entity set ***
-    const finalRelations = graph.relations.filter(r =>
-        finalEntityNames.has(r.from) && finalEntityNames.has(r.to)
-    );
+    // 5. Use the directly involving relations as the final relations (MODIFIED)
+    const finalRelations = directlyInvolvingRelations;
 
-    // 6. Filter and process observations for *all* entities in the final set (Modified)
+    // 6. Filter and process observations for *all* entities in the final set (Uses modified finalEntityNames, sorting/limiting logic unchanged)
     const relevantObservationsRaw = graph.observations.filter(o => finalEntityNames.has(o.entityName));
 
     const activeObservationsWithTimestamp: { timestamp: Date; observation: Observation }[] = [];
@@ -510,48 +513,38 @@ class KnowledgeGraphManager {
         const timestamp = new Date(obs.timestamp);
         if (!isNaN(timestamp.getTime())) {
           if (obs.status === 'Active') {
-            // Add Active observations with valid timestamps to a list for sorting
             activeObservationsWithTimestamp.push({ timestamp, observation: obs });
           } else {
             timestampedNonActive.push({ timestamp, observation: obs });
           }
         } else {
-          // Invalid timestamp or no timestamp but has 'timestamp' field (edge case)
           untimestampedObservations.push(obs);
         }
       } else {
-        // No timestamp field at all
         untimestampedObservations.push(obs);
       }
     });
 
-    // Sort Active observations by timestamp descending (newest first)
     activeObservationsWithTimestamp.sort((a, b) => b.timestamp.getTime() - a.timestamp.getTime());
-    // Take only the most recent MAX_RECENT_ACTIVE observations
     const recentActive = activeObservationsWithTimestamp
         .slice(0, MAX_RECENT_ACTIVE)
         .map(item => item.observation);
 
-
-    // Sort Timestamped Non-Active observations by timestamp descending (newest first)
     timestampedNonActive.sort((a, b) => b.timestamp.getTime() - a.timestamp.getTime());
-    // Take only the most recent MAX_RECENT_NON_ACTIVE observations
     const recentNonActive = timestampedNonActive
         .slice(0, MAX_RECENT_NON_ACTIVE)
         .map(item => item.observation);
 
-    // Combine the results: Recent Active + Recent Non-Active + Limited Untimestamped
     const finalObservations = [
         ...recentActive,
         ...recentNonActive,
-        ...untimestampedObservations.slice(0, MAX_UNTIMESTAMPED) // Apply limit here
+        ...untimestampedObservations.slice(0, MAX_UNTIMESTAMPED)
     ];
 
-
-    // 7. Return the final entities, the *corrected* final relations, and processed observations
+    // 7. Return the filtered entities, relations, and observations
     return {
       entities: finalEntities,
-      relations: finalRelations, // Use the correctly filtered relations
+      relations: finalRelations,
       observations: finalObservations,
     };
   }
