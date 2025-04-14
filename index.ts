@@ -226,11 +226,54 @@ class KnowledgeGraphManager {
 
           const addedIds: string[] = [];
           for (const content of input.contents) {
+              // Parse the content first to get status and timestamp
+              const parsed = this.parseObservationContent(content);
+              
+              // Special handling for Archived status - look for existing observations to update
+              if (parsed.status === 'Archived') {
+                  // Find similar observations for this entity that aren't already archived
+                  // We'll compare the text content without status/timestamp prefixes
+                  const textContentNoPrefixes = parsed.text.trim();
+                  let matchFound = false;
+                  
+                  // Look through existing observations to find a match to update
+                  for (let i = 0; i < graph.observations.length; i++) {
+                      const obs = graph.observations[i];
+                      if (obs.entityName === input.entityName && obs.status !== 'Archived') {
+                          // Parse this observation's content to get just the text part
+                          const existingParsed = this.parseObservationContent(obs.content);
+                          const existingTextNoPrefixes = existingParsed.text.trim();
+                          
+                          // If the core text content matches, update this observation instead of adding new
+                          if (existingTextNoPrefixes === textContentNoPrefixes) {
+                              // Update the observation's status to Archived
+                              graph.observations[i] = {
+                                  ...obs,
+                                  content: content, // Update with new full content string
+                                  status: 'Archived',
+                                  timestamp: parsed.timestamp || obs.timestamp, // Use new timestamp if provided
+                                  version: obs.version + 1,
+                              };
+                              addedIds.push(obs.id); // Add the existing ID to the result
+                              matchFound = true;
+                              break;
+                          }
+                      }
+                  }
+                  
+                  // If no match found for archiving, proceed with normal flow
+                  if (matchFound) {
+                      continue; // Skip to next content item
+                  }
+              }
+              
+              // Regular flow - check for duplicates 
               // Check if an observation with the exact same entityName and content already exists
-              const alreadyExists = graph.observations.some(obs => obs.entityName === input.entityName && obs.content === content);
+              const alreadyExists = graph.observations.some(obs => 
+                  obs.entityName === input.entityName && obs.content === content
+              );
 
               if (!alreadyExists) {
-                  const parsed = this.parseObservationContent(content);
                   const newObservation: Observation = {
                       id: this.generateObservationId(),
                       entityName: input.entityName,
