@@ -230,7 +230,8 @@ class KnowledgeGraphManager {
               const parsed = this.parseObservationContent(content);
               
               // Special handling for Archived status - look for existing observations to update
-              if (parsed.status === 'Archived') {
+              // MODIFIED: Extend this logic to other non-Active statuses like Resolved, Background
+              if (parsed.status && parsed.status !== 'Active') { // Check if status is defined and not 'Active'
                   // Find similar observations for this entity that aren't already archived
                   // We'll compare the text content without status/timestamp prefixes
                   const textContentNoPrefixes = parsed.text.trim();
@@ -239,36 +240,42 @@ class KnowledgeGraphManager {
                   // Look through existing observations to find a match to update
                   for (let i = 0; i < graph.observations.length; i++) {
                       const obs = graph.observations[i];
-                      if (obs.entityName === input.entityName && obs.status !== 'Archived') {
+                      // Only update if the existing observation is currently 'Active' 
+                      // (or maybe has no status? Decide if null status should be updatable)
+                      // And ensure the entity matches
+                      if (obs.entityName === input.entityName && obs.status === 'Active') { 
                           // Parse this observation's content to get just the text part
                           const existingParsed = this.parseObservationContent(obs.content);
                           const existingTextNoPrefixes = existingParsed.text.trim();
                           
                           // If the core text content matches, update this observation instead of adding new
                           if (existingTextNoPrefixes === textContentNoPrefixes) {
-                              // Update the observation's status to Archived
+                              // Update the observation's status, content, and timestamp
                               graph.observations[i] = {
                                   ...obs,
                                   content: content, // Update with new full content string
-                                  status: 'Archived',
-                                  timestamp: parsed.timestamp || obs.timestamp, // Use new timestamp if provided
+                                  status: parsed.status, // Update to the new status (Resolved, Background, Archived)
+                                  timestamp: parsed.timestamp || obs.timestamp, // Use new timestamp if provided, else keep old
                                   version: obs.version + 1,
                               };
                               addedIds.push(obs.id); // Add the existing ID to the result
                               matchFound = true;
-                              break;
+                              console.log(`[KnowledgeGraphManager] Updated existing observation ${obs.id} for entity '${input.entityName}' to status '${parsed.status}' based on content match.`);
+                              break; // Stop searching once a match is updated
                           }
                       }
                   }
                   
-                  // If no match found for archiving, proceed with normal flow
+                  // If a match was found and updated, skip adding a new observation for this content item
                   if (matchFound) {
                       continue; // Skip to next content item
                   }
+                  // If no match was found to update, fall through to the regular add logic below
+                  // This might happen if there's no 'Active' observation with matching text, 
+                  // or if the incoming status was 'Active' itself.
               }
               
-              // Regular flow - check for duplicates 
-              // Check if an observation with the exact same entityName and content already exists
+              // Regular flow - check for duplicates (exact match) before adding NEW observation
               const alreadyExists = graph.observations.some(obs => 
                   obs.entityName === input.entityName && obs.content === content
               );
