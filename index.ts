@@ -514,6 +514,7 @@ class KnowledgeGraphManager {
     const MAX_RECENT_NON_ACTIVE = 5;
     const MAX_RECENT_ACTIVE = 15; // Limit for Active observations
     const MAX_UNTIMESTAMPED = 10; // Limit for Untimestamped observations
+    const MAX_RECENT_RELATIONS = 50; // NEW: Limit for recent relations
 
     // 1. Find canonical names matching input names/aliases (Unchanged)
     inputNames.forEach(inputName => {
@@ -548,8 +549,10 @@ class KnowledgeGraphManager {
     // 4. Filter entities based on the final set of names (Uses the modified finalEntityNames)
     const finalEntities = graph.entities.filter(e => finalEntityNames.has(e.name));
 
-    // 5. Use the directly involving relations as the final relations (MODIFIED)
-    const finalRelations = directlyInvolvingRelations;
+    // 5. Filter, sort, and limit the relations (MODIFIED)
+    const sortedRelations = directlyInvolvingRelations
+      .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()); // Sort newest first
+    const finalRelations = sortedRelations.slice(0, MAX_RECENT_RELATIONS); // Apply limit
 
     // 6. Filter and process observations for *all* entities in the final set (Uses modified finalEntityNames, sorting/limiting logic unchanged)
     const relevantObservationsRaw = graph.observations.filter(o => finalEntityNames.has(o.entityName));
