@@ -65,7 +65,8 @@ interface KnowledgeGraph {
 
 // Define a specific type for the update payload
 interface EntityUpdatePayload {
-  name: string; // Required
+  name: string; // Required: The current name of the entity to find
+  newName?: string; // Optional: The new name for the entity
   entityType?: string; // Optional
   aliases?: string[]; // Optional
 }
@@ -428,24 +429,47 @@ class KnowledgeGraphManager {
     };
   }
 
-  // updateEntities updated to use the specific payload type
-  async updateEntities(entitiesToUpdate: EntityUpdatePayload[]): Promise<Entity[]> {
+  // updateEntities updated to use the specific payload type and handle renaming
+  async updateEntities(entitiesToUpdate: EntityUpdatePayload[]): Promise<{ updatedEntities: Entity[], warnings: string[] }> {
       const graph = await this.loadGraph();
       const updatedEntitiesResult: Entity[] = [];
+      const warnings: string[] = [];
+      let graphModified = false;
 
       entitiesToUpdate.forEach(updateData => {
-          const existingEntityIndex = graph.entities.findIndex(e => e.name === updateData.name);
+          const currentName = updateData.name;
+          const newName = updateData.newName?.trim(); // Trim whitespace from new name
+
+          const existingEntityIndex = graph.entities.findIndex(e => e.name === currentName);
           if (existingEntityIndex === -1) {
-              console.warn(`Entity with name ${updateData.name} not found for update. Skipping.`);
+              warnings.push(`Entity with name '${currentName}' not found for update. Skipping.`);
               return; // Skip this update
           }
 
           const existingEntity = graph.entities[existingEntityIndex];
+          let finalName = currentName;
+
+          // --- Name Change Logic ---
+          if (newName && newName !== currentName) {
+              // Check for potential name collision before renaming
+              const collisionIndex = graph.entities.findIndex(e => e.name === newName);
+              // Ensure collision check doesn't flag the entity itself if no other properties are changing
+              if (collisionIndex !== -1 && collisionIndex !== existingEntityIndex) {
+                  warnings.push(`Cannot rename entity '${currentName}' to '${newName}'. An entity with the name '${newName}' already exists. Skipping rename for this entity.`);
+                  // Decide if we should proceed with other updates (type/aliases) or skip entirely.
+                  // Let's skip the entire update for this entity to avoid partial updates.
+                  return;
+              }
+              // If no collision, set the final name to the new name
+              finalName = newName;
+          }
+          // --- End Name Change Logic ---
 
           // Create the updated entity, applying only provided fields
           const newlyUpdatedEntity: Entity = {
               ...existingEntity, // Start with existing data
-              // Conditionally update fields using the clearer type
+              name: finalName, // Apply the final name (could be old or new)
+              // Conditionally update other fields
               ...(updateData.entityType !== undefined && { entityType: updateData.entityType }),
               ...(updateData.aliases !== undefined && { aliases: updateData.aliases }),
               // Update version and timestamp
@@ -453,15 +477,52 @@ class KnowledgeGraphManager {
               createdAt: new Date().toISOString() // Consider if this should be modifiedAt
           };
 
-          // Replace the old entity with the updated one
+          // Replace the old entity with the updated one in the graph
           graph.entities[existingEntityIndex] = newlyUpdatedEntity;
           updatedEntitiesResult.push(newlyUpdatedEntity);
+          graphModified = true; // Mark graph as modified
+
+          // --- Update Relations and Observations if name changed ---
+          if (finalName !== currentName) {
+              console.log(`[KnowledgeGraphManager] Renaming entity from '${currentName}' to '${finalName}'. Updating relations and observations...`);
+              let refsUpdatedCount = 0;
+              // Update relations
+              graph.relations = graph.relations.map(relation => {
+                  let updated = false;
+                  if (relation.from === currentName) {
+                      relation.from = finalName;
+                      relation.version += 1; // Bump version on relation update
+                      updated = true;
+                  }
+                  if (relation.to === currentName) {
+                      relation.to = finalName;
+                      // Avoid double version bump if both from/to matched
+                      if (!updated) relation.version += 1;
+                      updated = true;
+                  }
+                  if(updated) refsUpdatedCount++;
+                  return relation;
+              });
+
+              // Update observations
+              graph.observations = graph.observations.map(observation => {
+                  if (observation.entityName === currentName) {
+                      observation.entityName = finalName;
+                      observation.version += 1; // Bump version on observation update
+                      refsUpdatedCount++;
+                  }
+                  return observation;
+              });
+              console.log(`[KnowledgeGraphManager] Updated ${refsUpdatedCount} references in relations and observations for the renamed entity.`);
+          }
+          // --- End Update Relations and Observations ---
       });
 
-      if (updatedEntitiesResult.length > 0) {
-        await this.saveGraph(graph);
+      if (graphModified) {
+          await this.saveGraph(graph);
       }
-      return updatedEntitiesResult;
+      // Return both updated entities and any warnings generated
+      return { updatedEntities: updatedEntitiesResult, warnings: warnings };
   }
 
 
@@ -792,7 +853,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       },
       {
           name: "update_entities",
-          description: "Update fields (like type or aliases) of existing entities. Does not update observations.",
+          description: "Update fields (like type, aliases, or name) of existing entities. If 'newName' is provided, also updates all references in relations and observations.",
           inputSchema: {
               type: "object",
               properties: {
@@ -801,11 +862,12 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
                       items: {
                           type: "object",
                           properties: {
-                              name: { type: "string", description: "Name of entity to update" },
+                              name: { type: "string", description: "The current name of the entity to update" },
+                              newName: { type: "string", description: "Optional: The new name for the entity" },
                               entityType: { type: "string", description: "Optional new type" },
                               aliases: { type: "array", items: { type: "string" }, description: "Optional new list of aliases" }
                           },
-                          required: ["name"],
+                          required: ["name"], // Only current name is strictly required to find the entity
                       },
                   },
               },
@@ -890,7 +952,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       // Return type now includes top-level observations array
       return { content: [{ type: "text", text: JSON.stringify(await knowledgeGraphManager.openNodes(args.names as string[]), null, 2) }] };
     case "update_entities":
-       // Use the specific payload type for casting
+       // Use the specific payload type for casting - function now returns { updatedEntities: [], warnings: [] }
       return { content: [{ type: "text", text: JSON.stringify(await knowledgeGraphManager.updateEntities(args.entities as EntityUpdatePayload[]), null, 2) }] };
     case "update_relations":
       return { content: [{ type: "text", text: JSON.stringify(await knowledgeGraphManager.updateRelations(args.relations as Relation[]), null, 2) }] };
