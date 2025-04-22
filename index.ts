@@ -572,9 +572,7 @@ class KnowledgeGraphManager {
   async getContextInfo(inputNames: string[]): Promise<KnowledgeGraph> {
     const graph = await this.loadGraph(); // Loads the already cleaned graph
     const initialMatchingNames = new Set<string>();
-    const MAX_RECENT_NON_ACTIVE = 5;
-    const MAX_RECENT_ACTIVE = 15; // Limit for Active observations
-    const MAX_UNTIMESTAMPED = 10; // Limit for Untimestamped observations
+    const TOTAL_OBSERVATION_LIMIT = 25; // Define a single limit for all observations
     const MAX_RECENT_RELATIONS = 50; // NEW: Limit for recent relations
 
     // 1. Find canonical names matching input names/aliases (Unchanged)
@@ -615,47 +613,37 @@ class KnowledgeGraphManager {
       .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()); // Sort newest first
     const finalRelations = sortedRelations.slice(0, MAX_RECENT_RELATIONS); // Apply limit
 
-    // 6. Filter and process observations for *all* entities in the final set (Uses modified finalEntityNames, sorting/limiting logic unchanged)
+    // 6. Filter all observations for the final entities (Unchanged filtering)
     const relevantObservationsRaw = graph.observations.filter(o => finalEntityNames.has(o.entityName));
 
-    const activeObservationsWithTimestamp: { timestamp: Date; observation: Observation }[] = [];
-    const timestampedNonActive: { timestamp: Date; observation: Observation }[] = [];
-    const untimestampedObservations: Observation[] = [];
+    // 7. NEW SORTING LOGIC: Sort all relevant observations primarily by timestamp (desc), secondarily by createdAt (desc)
+    const sortedObservations = relevantObservationsRaw.sort((a, b) => {
+        const tsA = a.timestamp ? new Date(a.timestamp) : null;
+        const tsB = b.timestamp ? new Date(b.timestamp) : null;
+        const validTsA = tsA && !isNaN(tsA.getTime());
+        const validTsB = tsB && !isNaN(tsB.getTime());
 
-    relevantObservationsRaw.forEach(obs => {
-      if (obs.timestamp) {
-        const timestamp = new Date(obs.timestamp);
-        if (!isNaN(timestamp.getTime())) {
-          if (obs.status === 'Active') {
-            activeObservationsWithTimestamp.push({ timestamp, observation: obs });
-          } else {
-            timestampedNonActive.push({ timestamp, observation: obs });
-          }
-        } else {
-          untimestampedObservations.push(obs);
+        // Prioritize valid timestamps
+        if (validTsA && !validTsB) return -1; // a has timestamp, b doesn't -> a comes first
+        if (!validTsA && validTsB) return 1;  // b has timestamp, a doesn't -> b comes first
+
+        // If both have valid timestamps, compare them (newest first)
+        if (validTsA && validTsB) {
+            const timeDiff = tsB!.getTime() - tsA!.getTime();
+            if (timeDiff !== 0) return timeDiff; // If timestamps differ, return the difference
         }
-      } else {
-        untimestampedObservations.push(obs);
-      }
+
+        // If timestamps are the same or both invalid, compare by createdAt (newest first)
+        const createdA = new Date(a.createdAt);
+        const createdB = new Date(b.createdAt);
+        // Assume createdAt is always valid for simplicity, add checks if needed
+        return createdB.getTime() - createdA.getTime();
     });
 
-    activeObservationsWithTimestamp.sort((a, b) => b.timestamp.getTime() - a.timestamp.getTime());
-    const recentActive = activeObservationsWithTimestamp
-        .slice(0, MAX_RECENT_ACTIVE)
-        .map(item => item.observation);
+    // 8. Limit the total number of observations
+    const finalObservations = sortedObservations.slice(0, TOTAL_OBSERVATION_LIMIT);
 
-    timestampedNonActive.sort((a, b) => b.timestamp.getTime() - a.timestamp.getTime());
-    const recentNonActive = timestampedNonActive
-        .slice(0, MAX_RECENT_NON_ACTIVE)
-        .map(item => item.observation);
-
-    const finalObservations = [
-        ...recentActive,
-        ...recentNonActive,
-        ...untimestampedObservations.slice(0, MAX_UNTIMESTAMPED)
-    ];
-
-    // 7. Return the filtered entities, relations, and observations
+    // 9. Return the filtered entities, relations, and sorted/limited observations
     return {
       entities: finalEntities,
       relations: finalRelations,
