@@ -572,10 +572,13 @@ class KnowledgeGraphManager {
   async getContextInfo(inputNames: string[]): Promise<KnowledgeGraph> {
     const graph = await this.loadGraph(); // Loads the already cleaned graph
     const initialMatchingNames = new Set<string>();
-    const TOTAL_OBSERVATION_LIMIT = 25; // Define a single limit for all observations
-    const MAX_RECENT_RELATIONS = 50; // NEW: Limit for recent relations
+    // Restore original limits, but they apply AFTER createdAt sort within categories
+    const MAX_RECENT_ACTIVE = 15;
+    const MAX_RECENT_NON_ACTIVE = 5;
+    const MAX_UNTIMESTAMPED = 10;
+    const MAX_RECENT_RELATIONS = 50; // Limit for recent relations
 
-    // 1. Find canonical names matching input names/aliases (Unchanged)
+    // 1. Find canonical names matching input names/aliases
     inputNames.forEach(inputName => {
       const exactMatch = graph.entities.find(e => e.name === inputName);
       if (exactMatch) {
@@ -593,61 +596,77 @@ class KnowledgeGraphManager {
         return { entities: [], relations: [], observations: [] };
     }
 
-    // 2. Find relations *directly involving* the initial entities (MODIFIED)
+    // 2. Find relations *directly involving* the initial entities
     const directlyInvolvingRelations = graph.relations.filter(r =>
       initialMatchingNames.has(r.from) || initialMatchingNames.has(r.to)
     );
 
-    // 3. Collect unique entity names involved: initial entities + entities connected by the direct relations (MODIFIED)
+    // 3. Collect unique entity names involved: initial entities + entities connected by the direct relations
     const finalEntityNames = new Set<string>(initialMatchingNames);
     directlyInvolvingRelations.forEach(r => {
       finalEntityNames.add(r.from);
       finalEntityNames.add(r.to);
     });
 
-    // 4. Filter entities based on the final set of names (Uses the modified finalEntityNames)
+    // 4. Filter entities based on the final set of names
     const finalEntities = graph.entities.filter(e => finalEntityNames.has(e.name));
 
-    // 5. Filter, sort, and limit the relations (MODIFIED)
+    // 5. Filter, sort, and limit the relations
     const sortedRelations = directlyInvolvingRelations
       .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()); // Sort newest first
     const finalRelations = sortedRelations.slice(0, MAX_RECENT_RELATIONS); // Apply limit
 
-    // 6. Filter all observations for the final entities (Unchanged filtering)
+    // 6. Filter all observations for the final entities
     const relevantObservationsRaw = graph.observations.filter(o => finalEntityNames.has(o.entityName));
 
-    // 7. NEW SORTING LOGIC: Sort all relevant observations primarily by timestamp (desc), secondarily by createdAt (desc)
-    const sortedObservations = relevantObservationsRaw.sort((a, b) => {
-        const tsA = a.timestamp ? new Date(a.timestamp) : null;
-        const tsB = b.timestamp ? new Date(b.timestamp) : null;
-        const validTsA = tsA && !isNaN(tsA.getTime());
-        const validTsB = tsB && !isNaN(tsB.getTime());
-
-        // Prioritize valid timestamps
-        if (validTsA && !validTsB) return -1; // a has timestamp, b doesn't -> a comes first
-        if (!validTsA && validTsB) return 1;  // b has timestamp, a doesn't -> b comes first
-
-        // If both have valid timestamps, compare them (newest first)
-        if (validTsA && validTsB) {
-            const timeDiff = tsB!.getTime() - tsA!.getTime();
-            if (timeDiff !== 0) return timeDiff; // If timestamps differ, return the difference
-        }
-
-        // If timestamps are the same or both invalid, compare by createdAt (newest first)
-        const createdA = new Date(a.createdAt);
-        const createdB = new Date(b.createdAt);
-        // Assume createdAt is always valid for simplicity, add checks if needed
-        return createdB.getTime() - createdA.getTime();
+    // 7. Primary Sort: Sort ALL relevant observations by createdAt (descending) FIRST
+    const sortedByCreationDate = relevantObservationsRaw.sort((a, b) => {
+        // Assume createdAt is always valid
+        return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(); // Newest createdAt first
     });
 
-    // 8. Limit the total number of observations
-    const finalObservations = sortedObservations.slice(0, TOTAL_OBSERVATION_LIMIT);
+    // 8. Categorize the createdAt-sorted observations based on status and timestamp presence
+    const activeObservations: Observation[] = [];
+    const timestampedNonActive: Observation[] = [];
+    const untimestampedOrNullStatus: Observation[] = []; // Renamed for clarity
 
-    // 9. Return the filtered entities, relations, and sorted/limited observations
+    // Helper to check for valid timestamp
+    const hasValidTimestamp = (obs: Observation): boolean => {
+        if (!obs.timestamp) return false;
+        const tsDate = new Date(obs.timestamp);
+        return !isNaN(tsDate.getTime());
+    };
+
+    sortedByCreationDate.forEach(obs => {
+        if (obs.status === 'Active') {
+            activeObservations.push(obs);
+        } else if (hasValidTimestamp(obs)) {
+            // Includes Resolved, Background, Archived, or null status *if* timestamp is valid
+            timestampedNonActive.push(obs);
+        } else {
+            // Includes observations with no valid timestamp (regardless of status)
+            // or those with status 'Active' but an invalid timestamp (edge case, but captured here)
+            untimestampedOrNullStatus.push(obs);
+        }
+    });
+
+    // 9. Apply limits to each category (taking the first N items, which are the most recently created within that category)
+    const finalActive = activeObservations.slice(0, MAX_RECENT_ACTIVE);
+    const finalTimestampedNonActive = timestampedNonActive.slice(0, MAX_RECENT_NON_ACTIVE);
+    const finalUntimestamped = untimestampedOrNullStatus.slice(0, MAX_UNTIMESTAMPED);
+
+    // 10. Combine the limited lists in the desired order
+    const finalObservations = [
+        ...finalActive,
+        ...finalTimestampedNonActive,
+        ...finalUntimestamped
+    ];
+
+    // 11. Return the result
     return {
       entities: finalEntities,
       relations: finalRelations,
-      observations: finalObservations,
+      observations: finalObservations, // This list is now sorted by createdAt within categories, and prioritized by category
     };
   }
 } // End of KnowledgeGraphManager class
